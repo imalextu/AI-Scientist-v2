@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from openai import OpenAI
 
 from .config import LLMConfig
+
+DeltaCallback = Callable[[str], None]
 
 
 class LLMClient:
@@ -26,6 +28,95 @@ class LLMClient:
         user_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        on_delta: DeltaCallback | None = None,
+    ) -> Tuple[str, Dict[str, int], str]:
+        try:
+            return self._stream_complete_with_meta(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                on_delta=on_delta,
+            )
+        except Exception as exc:
+            if not self._should_fallback_to_non_stream(exc):
+                raise
+            # Fallback for providers that do not fully support stream responses.
+            return self._single_complete_with_meta(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                on_delta=on_delta,
+            )
+
+    def _stream_complete_with_meta(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_delta: DeltaCallback | None = None,
+    ) -> Tuple[str, Dict[str, int], str]:
+        response = self.client.chat.completions.create(
+            model=self.config.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.config.temperature if temperature is None else temperature,
+            max_tokens=self.config.max_tokens if max_tokens is None else max_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        text_chunks: list[str] = []
+        finish_reason = ""
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
+        for chunk in response:
+            usage_chunk = getattr(chunk, "usage", None)
+            if usage_chunk:
+                usage = {
+                    "prompt_tokens": int(getattr(usage_chunk, "prompt_tokens", 0) or 0),
+                    "completion_tokens": int(
+                        getattr(usage_chunk, "completion_tokens", 0) or 0
+                    ),
+                    "total_tokens": int(getattr(usage_chunk, "total_tokens", 0) or 0),
+                }
+
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+
+            choice = choices[0]
+            delta = getattr(choice, "delta", None)
+            piece = self._normalize_delta_content(getattr(delta, "content", None))
+            if piece:
+                text_chunks.append(piece)
+                if on_delta:
+                    on_delta(piece)
+
+            reason = getattr(choice, "finish_reason", None)
+            if isinstance(reason, str) and reason.strip():
+                finish_reason = reason.strip()
+
+        text = "".join(text_chunks).strip()
+        return text, usage, finish_reason
+
+    def _single_complete_with_meta(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_delta: DeltaCallback | None = None,
     ) -> Tuple[str, Dict[str, int], str]:
         response = self.client.chat.completions.create(
             model=self.config.model,
@@ -38,6 +129,8 @@ class LLMClient:
         )
 
         text = (response.choices[0].message.content or "").strip()
+        if text and on_delta:
+            on_delta(text)
         finish_reason = (response.choices[0].finish_reason or "").strip()
         usage = {
             "prompt_tokens": 0,
@@ -59,11 +152,56 @@ class LLMClient:
         user_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        on_delta: DeltaCallback | None = None,
     ) -> Tuple[str, Dict[str, int]]:
         text, usage, _ = self.complete_with_meta(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            on_delta=on_delta,
         )
         return text, usage
+
+    def _normalize_delta_content(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                    continue
+                text_attr = getattr(item, "text", None)
+                if isinstance(text_attr, str):
+                    parts.append(text_attr)
+            return "".join(parts)
+
+        text_attr = getattr(content, "text", None)
+        if isinstance(text_attr, str):
+            return text_attr
+        return ""
+
+    def _should_fallback_to_non_stream(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        if not message:
+            return False
+        unsupported_hints = (
+            "stream_options",
+            "unknown parameter",
+            "does not support stream",
+            "does not support streaming",
+            "streaming is not supported",
+            "unsupported",
+        )
+        if "stream" not in message:
+            return False
+        return any(hint in message for hint in unsupported_hints)

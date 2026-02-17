@@ -4,7 +4,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from .config import AppConfig
 from .llm_client import LLMClient
@@ -46,39 +46,86 @@ PAPER_SYSTEM_PROMPT = """
 4. 严禁捏造具体统计结果；如无真实数据，请明确写“示例性分析/待实证验证”。
 """.strip()
 
+WorkflowEventHandler = Callable[[str, Dict[str, Any]], None]
+
 
 class ThesisWorkflow:
-    def __init__(self, config: AppConfig):
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        event_handler: WorkflowEventHandler | None = None,
+    ):
         self.config = config
         self.project_root = Path(config.project_root).resolve()
         self.client = LLMClient(config.llm)
         self.retriever = LiteratureRetriever(config.retrieval)
+        self.event_handler = event_handler
 
     def run(self, topic_text: str, forced_title: str | None = None) -> Path:
         output_root = ensure_dir(self.project_root / self.config.paper.output_dir)
         run_id = now_stamp()
         run_dir = output_root / f"{run_id}_management_thesis"
         ensure_dir(run_dir)
+        self._emit(
+            "workflow_started",
+            run_id=run_id,
+            output_root=str(output_root),
+            model=self.config.llm.model,
+        )
 
         write_text(run_dir / "00_topic.md", topic_text.strip())
+        self._emit(
+            "topic_saved",
+            path=str(run_dir / "00_topic.md"),
+            topic=topic_text.strip(),
+        )
 
+        self._emit(
+            "literature_started",
+            enabled=self.config.retrieval.enabled,
+            provider=self.config.retrieval.provider,
+        )
         literature_items, literature_context = self._collect_literature(topic_text)
         write_json(run_dir / "00_literature.json", literature_items)
+        self._emit(
+            "literature_completed",
+            count=len(literature_items),
+            path=str(run_dir / "00_literature.json"),
+            items=literature_items,
+        )
 
+        self._emit("stage_started", stage="idea")
         idea_data, idea_raw, idea_usage = self._run_idea_stage(
             topic_text=topic_text,
             literature_context=literature_context,
             forced_title=forced_title,
         )
         write_json(run_dir / "01_idea.json", idea_data)
+        self._emit(
+            "stage_completed",
+            stage="idea",
+            path=str(run_dir / "01_idea.json"),
+            content=json.dumps(idea_data, ensure_ascii=False, indent=2),
+            usage=idea_usage,
+        )
 
+        self._emit("stage_started", stage="outline")
         outline_data, outline_raw, outline_usage = self._run_outline_stage(
             topic_text=topic_text,
             literature_context=literature_context,
             idea_data=idea_data,
         )
         write_json(run_dir / "02_outline.json", outline_data)
+        self._emit(
+            "stage_completed",
+            stage="outline",
+            path=str(run_dir / "02_outline.json"),
+            content=json.dumps(outline_data, ensure_ascii=False, indent=2),
+            usage=outline_usage,
+        )
 
+        self._emit("stage_started", stage="paper")
         thesis_md, thesis_raw, paper_usage = self._run_paper_stage(
             topic_text=topic_text,
             literature_context=literature_context,
@@ -86,6 +133,13 @@ class ThesisWorkflow:
             outline_data=outline_data,
         )
         write_text(run_dir / "03_thesis.md", thesis_md)
+        self._emit(
+            "stage_completed",
+            stage="paper",
+            path=str(run_dir / "03_thesis.md"),
+            content=thesis_md,
+            usage=paper_usage,
+        )
 
         if self.config.runtime.save_raw_responses:
             write_text(run_dir / "raw_01_idea.txt", idea_raw)
@@ -104,6 +158,7 @@ class ThesisWorkflow:
             },
         )
         write_json(run_dir / "run_metadata.json", metadata)
+        self._emit("metadata_saved", path=str(run_dir / "run_metadata.json"))
 
         final_title = forced_title or self._get_title(idea_data)
         if final_title:
@@ -113,6 +168,12 @@ class ThesisWorkflow:
             if better_dir != run_dir:
                 run_dir.rename(better_dir)
                 run_dir = better_dir
+        self._emit(
+            "workflow_completed",
+            run_dir=str(run_dir),
+            title=final_title,
+            usage=metadata.get("usage", {}),
+        )
         return run_dir
 
     def _collect_literature(self, topic_text: str) -> Tuple[list[dict[str, str]], str]:
@@ -147,6 +208,9 @@ class ThesisWorkflow:
             user_prompt=user_prompt,
             temperature=self.config.workflow.temperature,
             max_tokens=max(self.config.llm.max_tokens // 2, 1800),
+            on_delta=lambda piece: self._emit(
+                "stage_delta", stage="idea", round=1, text=piece
+            ),
         )
         parsed = extract_json_payload(raw_text)
         if not isinstance(parsed, dict):
@@ -187,14 +251,27 @@ class ThesisWorkflow:
         parsed_json: Any = None
 
         for round_idx in range(max_rounds):
+            self._emit("stage_round_started", stage="outline", round=round_idx + 1)
             raw_text, usage, finish_reason = self.client.complete_with_meta(
                 system_prompt=OUTLINE_SYSTEM_PROMPT,
                 user_prompt=current_prompt,
                 temperature=self.config.workflow.temperature,
                 max_tokens=max(self.config.llm.max_tokens // 2, 2200),
+                on_delta=lambda piece, current_round=round_idx + 1: self._emit(
+                    "stage_delta",
+                    stage="outline",
+                    round=current_round,
+                    text=piece,
+                ),
             )
             raw_chunks.append(raw_text)
             self._accumulate_usage(usage_total, usage)
+            self._emit(
+                "stage_round_completed",
+                stage="outline",
+                round=round_idx + 1,
+                finish_reason=finish_reason,
+            )
 
             clean_chunk = self._strip_markdown_fence(raw_text)
             merged_text = self._append_with_overlap(merged_text, clean_chunk)
@@ -211,7 +288,14 @@ class ThesisWorkflow:
         final_parsed = extract_json_payload(merged_text)
         if not self._outline_is_complete(final_parsed):
             repaired_text, repaired_usage = self._repair_json_object(
-                merged_text, purpose="论文大纲 JSON"
+                merged_text,
+                purpose="论文大纲 JSON",
+                on_delta=lambda piece: self._emit(
+                    "stage_delta",
+                    stage="outline",
+                    round=max_rounds + 1,
+                    text=piece,
+                ),
             )
             if repaired_text:
                 raw_chunks.append(repaired_text)
@@ -262,14 +346,27 @@ class ThesisWorkflow:
         current_prompt = user_prompt
 
         for round_idx in range(max_rounds):
+            self._emit("stage_round_started", stage="paper", round=round_idx + 1)
             raw_text, usage, finish_reason = self.client.complete_with_meta(
                 system_prompt=PAPER_SYSTEM_PROMPT,
                 user_prompt=current_prompt,
                 temperature=self.config.workflow.temperature,
                 max_tokens=self.config.llm.max_tokens,
+                on_delta=lambda piece, current_round=round_idx + 1: self._emit(
+                    "stage_delta",
+                    stage="paper",
+                    round=current_round,
+                    text=piece,
+                ),
             )
             raw_chunks.append(raw_text)
             self._accumulate_usage(usage_total, usage)
+            self._emit(
+                "stage_round_completed",
+                stage="paper",
+                round=round_idx + 1,
+                finish_reason=finish_reason,
+            )
 
             clean_chunk = self._strip_markdown_fence(raw_text)
             merged_paper = self._append_with_overlap(merged_paper, clean_chunk)
@@ -404,7 +501,11 @@ class ThesisWorkflow:
         )
 
     def _repair_json_object(
-        self, broken_text: str, *, purpose: str
+        self,
+        broken_text: str,
+        *,
+        purpose: str,
+        on_delta: Callable[[str], None] | None = None,
     ) -> tuple[str, Dict[str, int]]:
         repair_system_prompt = (
             "你是一个严格的 JSON 修复器。"
@@ -427,8 +528,18 @@ class ThesisWorkflow:
             user_prompt=repair_user_prompt,
             temperature=0.0,
             max_tokens=max(self.config.llm.max_tokens // 2, 1500),
+            on_delta=on_delta,
         )
         return self._strip_markdown_fence(raw_text), usage
+
+    def _emit(self, event: str, **payload: Any) -> None:
+        if not self.event_handler:
+            return
+        try:
+            self.event_handler(event, payload)
+        except Exception:
+            # Event reporting should never break the workflow.
+            return
 
     def _tail_text(self, text: str, max_chars: int) -> str:
         if max_chars <= 0:

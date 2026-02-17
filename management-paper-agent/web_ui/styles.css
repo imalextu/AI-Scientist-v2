@@ -1,0 +1,225 @@
+:root {
+  --bg-0: #f8f5ef;
+  --bg-1: #dcebf2;
+  --bg-2: #f3dcb4;
+  --card: rgba(255, 255, 255, 0.9);
+  --ink: #122129;
+  --muted: #4b616d;
+  --accent: #0b6e6b;
+  --accent-warm: #d2693c;
+  --border: rgba(18, 33, 41, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  background: linear-gradient(120deg, var(--bg-0), #fffdf9 42%, var(--bg-1));
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", sans-serif;
+}
+
+.background-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 8% 15%, rgba(210, 105, 60, 0.22), transparent 32%),
+    radial-gradient(circle at 88% 0%, rgba(11, 110, 107, 0.23), transparent 31%),
+    radial-gradient(circle at 52% 95%, rgba(243, 220, 180, 0.55), transparent 34%);
+}
+
+.shell {
+  position: relative;
+  z-index: 1;
+  max-width: 1380px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hero {
+  margin-bottom: 20px;
+  animation: fade-up 380ms ease;
+}
+
+.kicker {
+  margin: 0;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.hero h1 {
+  margin: 8px 0 6px;
+  font-size: clamp(30px, 4vw, 44px);
+  line-height: 1.1;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 430px) 1fr;
+  gap: 16px;
+}
+
+.panel {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  backdrop-filter: blur(2px);
+  padding: 16px;
+  box-shadow: 0 14px 34px rgba(18, 33, 41, 0.06);
+}
+
+.controls h2,
+.card h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+input,
+textarea,
+button {
+  font-family: "JetBrains Mono", "Sarasa Mono SC", "SFMono-Regular", monospace;
+}
+
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  color: var(--ink);
+  background: #fdfcf9;
+}
+
+textarea {
+  min-height: 180px;
+  resize: vertical;
+  line-height: 1.42;
+}
+
+#configInput {
+  min-height: 240px;
+}
+
+#topicInput {
+  min-height: 180px;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+#startBtn {
+  background: linear-gradient(110deg, var(--accent), #0d8f88);
+  color: #fff;
+}
+
+#stopBtn {
+  background: linear-gradient(110deg, var(--accent-warm), #cf7f4b);
+  color: #fff;
+}
+
+button.ghost {
+  opacity: 0.85;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+#statusLine,
+#pathLine {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.outputs {
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+pre {
+  margin: 0;
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fbfc;
+  border: 1px solid rgba(18, 33, 41, 0.08);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.42;
+  font-family: "JetBrains Mono", "Sarasa Mono SC", "SFMono-Regular", monospace;
+  font-size: 12px;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1040px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .outputs {
+    grid-template-columns: 1fr;
+  }
+
+  pre {
+    max-height: 260px;
+  }
+}

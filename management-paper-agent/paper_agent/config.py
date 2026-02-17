@@ -120,12 +120,7 @@ def _legacy_llm_block(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def load_config(config_path: str | Path) -> AppConfig:
-    path = Path(config_path).expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"未找到配置文件: {path}")
-
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
     if not isinstance(raw, dict):
         raise ValueError("配置文件格式错误，根节点必须是对象")
 
@@ -196,5 +191,19 @@ def load_config(config_path: str | Path) -> AppConfig:
         retrieval=retrieval_cfg,
         workflow=workflow_cfg,
         runtime=runtime_cfg,
-        project_root=path.parent,
+        project_root=project_root.resolve(),
     )
+
+
+def load_config(config_path: str | Path) -> AppConfig:
+    path = Path(config_path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"未找到配置文件: {path}")
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return _build_app_config(raw, project_root=path.parent)
+
+
+def load_config_from_text(yaml_text: str, *, project_root: str | Path) -> AppConfig:
+    raw = yaml.safe_load(yaml_text) or {}
+    base = Path(project_root).expanduser().resolve()
+    return _build_app_config(raw, project_root=base)

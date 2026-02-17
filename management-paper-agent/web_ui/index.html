@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Management Paper Agent</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <div class="background-layer" aria-hidden="true"></div>
+
+    <main class="shell">
+      <header class="hero">
+        <p class="kicker">Local Workflow Console</p>
+        <h1>管理学论文生成器</h1>
+        <p class="subtitle">编辑 config 与 topic，点击生成后按阶段实时查看内容。</p>
+      </header>
+
+      <div class="layout">
+        <section class="panel controls">
+          <h2>输入配置</h2>
+
+          <div class="field">
+            <label for="titleInput">论文题目（可选）</label>
+            <input id="titleInput" type="text" placeholder="例如：数字化转型对组织韧性的影响研究" />
+          </div>
+
+          <div class="field">
+            <label for="configInput">config.yaml</label>
+            <textarea id="configInput" spellcheck="false"></textarea>
+          </div>
+
+          <div class="field">
+            <label for="topicInput">topic 内容</label>
+            <textarea id="topicInput" spellcheck="false"></textarea>
+          </div>
+
+          <div class="actions">
+            <button id="startBtn" type="button">生成</button>
+            <button id="stopBtn" type="button" class="ghost" disabled>停止显示</button>
+          </div>
+
+          <p id="statusLine">状态：等待开始</p>
+          <p id="pathLine">输出目录：-</p>
+        </section>
+
+        <section class="panel outputs">
+          <div class="card">
+            <h2>运行日志</h2>
+            <pre id="logOutput"></pre>
+          </div>
+
+          <div class="card">
+            <h2>01 选题设计 JSON</h2>
+            <pre id="ideaOutput"></pre>
+          </div>
+
+          <div class="card">
+            <h2>02 论文大纲 JSON</h2>
+            <pre id="outlineOutput"></pre>
+          </div>
+
+          <div class="card">
+            <h2>03 论文正文 Markdown</h2>
+            <pre id="paperOutput"></pre>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script src="/ui/app.js" defer></script>
+  </body>
+</html>

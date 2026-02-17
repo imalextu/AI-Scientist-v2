@@ -61,6 +61,25 @@ python run.py --topic "数字化转型背景下中小企业组织韧性提升机
 
 生成结果会写入 `outputs/<timestamp>_<title-slug>/`。
 
+## 本地可视化界面（流式展示）
+
+安装依赖后启动 Web 服务：
+
+```bash
+cd management-paper-agent
+pip install -r requirements.txt
+python web_app.py --config config.yaml --topic-file examples/topic_example.md --port 7860
+```
+
+浏览器打开 `http://127.0.0.1:7860`，即可：
+- 在线编辑 `config.yaml` 内容
+- 在线编辑 topic 文本
+- 点击“生成”后按阶段实时查看：
+  - `01_idea.json` 生成过程
+  - `02_outline.json` 生成过程
+  - `03_thesis.md` 生成过程
+- 任务完成后查看最终输出目录路径
+
 ## 可选参数
 
 ```bash

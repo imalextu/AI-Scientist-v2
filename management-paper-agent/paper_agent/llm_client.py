@@ -8,6 +8,11 @@ from openai import OpenAI
 from .config import LLMConfig
 
 DeltaCallback = Callable[[str], None]
+CancelChecker = Callable[[], bool]
+
+
+class RequestCancelledError(RuntimeError):
+    pass
 
 
 class LLMClient:
@@ -29,6 +34,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_delta: DeltaCallback | None = None,
+        cancel_checker: CancelChecker | None = None,
     ) -> Tuple[str, Dict[str, int], str]:
         try:
             return self._stream_complete_with_meta(
@@ -37,7 +43,10 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 on_delta=on_delta,
+                cancel_checker=cancel_checker,
             )
+        except RequestCancelledError:
+            raise
         except Exception as exc:
             if not self._should_fallback_to_non_stream(exc):
                 raise
@@ -48,6 +57,7 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 on_delta=on_delta,
+                cancel_checker=cancel_checker,
             )
 
     def _stream_complete_with_meta(
@@ -58,7 +68,9 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_delta: DeltaCallback | None = None,
+        cancel_checker: CancelChecker | None = None,
     ) -> Tuple[str, Dict[str, int], str]:
+        self._raise_if_cancelled(cancel_checker)
         response = self.client.chat.completions.create(
             model=self.config.model,
             messages=[
@@ -79,32 +91,41 @@ class LLMClient:
             "total_tokens": 0,
         }
 
-        for chunk in response:
-            usage_chunk = getattr(chunk, "usage", None)
-            if usage_chunk:
-                usage = {
-                    "prompt_tokens": int(getattr(usage_chunk, "prompt_tokens", 0) or 0),
-                    "completion_tokens": int(
-                        getattr(usage_chunk, "completion_tokens", 0) or 0
-                    ),
-                    "total_tokens": int(getattr(usage_chunk, "total_tokens", 0) or 0),
-                }
+        try:
+            for chunk in response:
+                self._raise_if_cancelled(cancel_checker, response=response)
 
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
+                usage_chunk = getattr(chunk, "usage", None)
+                if usage_chunk:
+                    usage = {
+                        "prompt_tokens": int(
+                            getattr(usage_chunk, "prompt_tokens", 0) or 0
+                        ),
+                        "completion_tokens": int(
+                            getattr(usage_chunk, "completion_tokens", 0) or 0
+                        ),
+                        "total_tokens": int(
+                            getattr(usage_chunk, "total_tokens", 0) or 0
+                        ),
+                    }
 
-            choice = choices[0]
-            delta = getattr(choice, "delta", None)
-            piece = self._normalize_delta_content(getattr(delta, "content", None))
-            if piece:
-                text_chunks.append(piece)
-                if on_delta:
-                    on_delta(piece)
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
 
-            reason = getattr(choice, "finish_reason", None)
-            if isinstance(reason, str) and reason.strip():
-                finish_reason = reason.strip()
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                piece = self._normalize_delta_content(getattr(delta, "content", None))
+                if piece:
+                    text_chunks.append(piece)
+                    if on_delta:
+                        on_delta(piece)
+
+                reason = getattr(choice, "finish_reason", None)
+                if isinstance(reason, str) and reason.strip():
+                    finish_reason = reason.strip()
+        finally:
+            self._close_response(response)
 
         text = "".join(text_chunks).strip()
         return text, usage, finish_reason
@@ -117,7 +138,9 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_delta: DeltaCallback | None = None,
+        cancel_checker: CancelChecker | None = None,
     ) -> Tuple[str, Dict[str, int], str]:
+        self._raise_if_cancelled(cancel_checker)
         response = self.client.chat.completions.create(
             model=self.config.model,
             messages=[
@@ -128,6 +151,7 @@ class LLMClient:
             max_tokens=self.config.max_tokens if max_tokens is None else max_tokens,
         )
 
+        self._raise_if_cancelled(cancel_checker)
         text = (response.choices[0].message.content or "").strip()
         if text and on_delta:
             on_delta(text)
@@ -153,6 +177,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_delta: DeltaCallback | None = None,
+        cancel_checker: CancelChecker | None = None,
     ) -> Tuple[str, Dict[str, int]]:
         text, usage, _ = self.complete_with_meta(
             system_prompt=system_prompt,
@@ -160,6 +185,7 @@ class LLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             on_delta=on_delta,
+            cancel_checker=cancel_checker,
         )
         return text, usage
 
@@ -205,3 +231,26 @@ class LLMClient:
         if "stream" not in message:
             return False
         return any(hint in message for hint in unsupported_hints)
+
+    def _raise_if_cancelled(
+        self,
+        cancel_checker: CancelChecker | None,
+        *,
+        response: Any | None = None,
+    ) -> None:
+        if not cancel_checker:
+            return
+        if not cancel_checker():
+            return
+        if response is not None:
+            self._close_response(response)
+        raise RequestCancelledError("任务已取消")
+
+    def _close_response(self, response: Any) -> None:
+        close_fn = getattr(response, "close", None)
+        if not callable(close_fn):
+            return
+        try:
+            close_fn()
+        except Exception:
+            return

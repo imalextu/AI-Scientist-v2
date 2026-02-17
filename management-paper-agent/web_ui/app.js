@@ -3,12 +3,14 @@ const topicInput = document.getElementById("topicInput");
 const titleInput = document.getElementById("titleInput");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const historyDirInput = document.getElementById("historyDirInput");
 const statusLine = document.getElementById("statusLine");
 const pathLine = document.getElementById("pathLine");
 const logOutput = document.getElementById("logOutput");
 const ideaOutput = document.getElementById("ideaOutput");
 const outlineOutput = document.getElementById("outlineOutput");
 const paperOutput = document.getElementById("paperOutput");
+const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 
 const stageOutputMap = {
   idea: ideaOutput,
@@ -16,8 +18,15 @@ const stageOutputMap = {
   paper: paperOutput,
 };
 
+const copyTargetLabelMap = {
+  ideaOutput: "01 选题设计 JSON",
+  outlineOutput: "02 论文大纲 JSON",
+  paperOutput: "03 论文正文 Markdown",
+};
+
 let currentSource = null;
 let streamClosedByClient = false;
+let currentJobId = null;
 
 function nowTag() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -39,6 +48,10 @@ function setPath(pathText) {
 function setRunning(running) {
   startBtn.disabled = running;
   stopBtn.disabled = !running;
+  historyDirInput.disabled = running;
+  if (!running) {
+    stopBtn.textContent = "停止任务";
+  }
 }
 
 function clearOutputs() {
@@ -75,6 +88,156 @@ function replaceStageText(stage, text) {
   target.scrollTop = target.scrollHeight;
 }
 
+function fallbackCopyText(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "readonly");
+  area.style.position = "fixed";
+  area.style.left = "-9999px";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(area);
+  }
+  return copied;
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const copied = fallbackCopyText(text);
+  if (!copied) {
+    throw new Error("当前浏览器环境不支持复制");
+  }
+}
+
+function flashCopyButton(button) {
+  const defaultLabel = button.dataset.labelDefault || "复制";
+  const copiedLabel = button.dataset.labelCopied || "已复制";
+  button.textContent = copiedLabel;
+  window.setTimeout(() => {
+    button.textContent = defaultLabel;
+  }, 1200);
+}
+
+async function copyOutputContent(button) {
+  const targetId = button.dataset.copyTarget || "";
+  const target = document.getElementById(targetId);
+  const targetLabel = copyTargetLabelMap[targetId] || "模块内容";
+  if (!target) {
+    setStatus(`复制失败：未找到 ${targetLabel}`);
+    return;
+  }
+
+  const text = target.textContent || "";
+  if (!text.trim()) {
+    setStatus(`复制失败：${targetLabel} 为空`);
+    return;
+  }
+
+  try {
+    await copyTextToClipboard(text);
+    flashCopyButton(button);
+    setStatus(`已复制 ${targetLabel}`);
+    logLine(`已复制 ${targetLabel}`);
+  } catch (error) {
+    setStatus(`复制失败：${targetLabel}`);
+    logLine(`复制失败（${targetLabel}）：${error.message}`);
+  }
+}
+
+function selectedFilePath(file) {
+  return (file.webkitRelativePath || file.name || "").replace(/\\/g, "/");
+}
+
+function selectedDirLabel(files) {
+  if (!files.length) {
+    return "-";
+  }
+  const parts = selectedFilePath(files[0]).split("/").filter(Boolean);
+  if (parts.length > 1) {
+    return parts[0];
+  }
+  return files[0].name || "已选择目录";
+}
+
+function findHistoryFile(files, fileName) {
+  const target = fileName.toLowerCase();
+  return files.find((file) => {
+    const fullPath = selectedFilePath(file).toLowerCase();
+    return (
+      fullPath === target ||
+      fullPath.endsWith(`/${target}`) ||
+      file.name.toLowerCase() === target
+    );
+  });
+}
+
+function prettyJsonText(text) {
+  if (!text) {
+    return "";
+  }
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch (_error) {
+    return text;
+  }
+}
+
+async function loadHistoryDir(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) {
+    setStatus("未选择历史目录");
+    return;
+  }
+  if (currentJobId) {
+    setStatus("任务进行中，无法加载历史目录");
+    return;
+  }
+
+  clearOutputs();
+  const folderLabel = selectedDirLabel(files);
+  setPath(folderLabel);
+  setStatus("加载历史目录中");
+  logLine(`开始加载历史目录：${folderLabel}`);
+
+  const targets = [
+    { stage: "idea", fileName: "01_idea.json", format: prettyJsonText },
+    { stage: "outline", fileName: "02_outline.json", format: prettyJsonText },
+    { stage: "paper", fileName: "03_thesis.md", format: (text) => text || "" },
+  ];
+
+  let loadedCount = 0;
+
+  for (const target of targets) {
+    const file = findHistoryFile(files, target.fileName);
+    if (!file) {
+      logLine(`未找到 ${target.fileName}`);
+      continue;
+    }
+    try {
+      const rawText = await file.text();
+      replaceStageText(target.stage, target.format(rawText));
+      loadedCount += 1;
+      logLine(`已加载 ${target.fileName}`);
+    } catch (error) {
+      logLine(`读取 ${target.fileName} 失败：${error.message}`);
+    }
+  }
+
+  if (loadedCount === 0) {
+    setStatus("未在目录中找到 01/02/03 文件");
+    return;
+  }
+  setStatus(`历史结果已加载（${loadedCount}/3）`);
+}
+
 function closeSource() {
   if (!currentSource) {
     return;
@@ -82,6 +245,12 @@ function closeSource() {
   streamClosedByClient = true;
   currentSource.close();
   currentSource = null;
+}
+
+function finishJob() {
+  closeSource();
+  setRunning(false);
+  currentJobId = null;
 }
 
 function handleEvent(name, payload) {
@@ -155,8 +324,14 @@ function handleEvent(name, payload) {
       setPath(payload.run_dir);
       logLine(`生成完成：${payload.run_dir}`);
     }
-    closeSource();
-    setRunning(false);
+    finishJob();
+    return;
+  }
+
+  if (name === "job_cancelled") {
+    setStatus("已停止");
+    logLine(payload.message || "任务已停止");
+    finishJob();
     return;
   }
 
@@ -164,8 +339,7 @@ function handleEvent(name, payload) {
     const message = payload.message || "未知错误";
     setStatus("失败");
     logLine(`任务失败：${message}`);
-    closeSource();
-    setRunning(false);
+    finishJob();
   }
 }
 
@@ -186,6 +360,7 @@ function bindSource(jobId) {
     "stage_completed",
     "workflow_completed",
     "done",
+    "job_cancelled",
     "job_error",
   ];
 
@@ -201,8 +376,7 @@ function bindSource(jobId) {
     }
     logLine("连接中断，请检查后端日志后重试。");
     setStatus("连接中断");
-    closeSource();
-    setRunning(false);
+    finishJob();
   };
 }
 
@@ -223,6 +397,7 @@ async function createJob() {
   if (currentSource) {
     closeSource();
   }
+  currentJobId = null;
 
   clearOutputs();
   setRunning(true);
@@ -246,11 +421,44 @@ async function createJob() {
 
     setStatus("进行中");
     logLine(`任务已创建：${data.job_id}`);
+    currentJobId = data.job_id;
     bindSource(data.job_id);
   } catch (error) {
     setStatus("失败");
-    setRunning(false);
+    finishJob();
     logLine(`任务创建失败：${error.message}`);
+  }
+}
+
+async function stopJob() {
+  if (!currentJobId) {
+    setStatus("无运行中的任务");
+    return;
+  }
+
+  stopBtn.disabled = true;
+  stopBtn.textContent = "停止中...";
+  setStatus("停止中");
+
+  try {
+    const response = await fetch(`/api/jobs/${currentJobId}/cancel`, {
+      method: "POST",
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "停止任务失败");
+    }
+
+    logLine(data.message || "已发送停止请求，正在终止任务。");
+    if (data.status === "cancelled") {
+      setStatus("已停止");
+      finishJob();
+    }
+  } catch (error) {
+    setStatus("停止失败");
+    stopBtn.disabled = false;
+    stopBtn.textContent = "停止任务";
+    logLine(`停止任务失败：${error.message}`);
   }
 }
 
@@ -272,10 +480,17 @@ startBtn.addEventListener("click", () => {
 });
 
 stopBtn.addEventListener("click", () => {
-  closeSource();
-  setRunning(false);
-  setStatus("已停止显示（后台可能仍在运行）");
-  logLine("你已停止当前流式显示。");
+  stopJob();
+});
+
+historyDirInput.addEventListener("change", () => {
+  loadHistoryDir(historyDirInput.files);
+});
+
+copyButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    copyOutputContent(button);
+  });
 });
 
 loadInitial();

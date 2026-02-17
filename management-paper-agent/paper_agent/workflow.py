@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
 from .config import AppConfig
-from .llm_client import LLMClient
+from .llm_client import LLMClient, RequestCancelledError
 from .retrieval import LiteratureRetriever, format_literature_context
 from .utils import (
     ensure_dir,
@@ -49,24 +49,32 @@ PAPER_SYSTEM_PROMPT = """
 WorkflowEventHandler = Callable[[str, Dict[str, Any]], None]
 
 
+class WorkflowCancelledError(RuntimeError):
+    pass
+
+
 class ThesisWorkflow:
     def __init__(
         self,
         config: AppConfig,
         *,
         event_handler: WorkflowEventHandler | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ):
         self.config = config
         self.project_root = Path(config.project_root).resolve()
         self.client = LLMClient(config.llm)
         self.retriever = LiteratureRetriever(config.retrieval)
         self.event_handler = event_handler
+        self.cancel_checker = cancel_checker
 
     def run(self, topic_text: str, forced_title: str | None = None) -> Path:
+        self._ensure_not_cancelled()
         output_root = ensure_dir(self.project_root / self.config.paper.output_dir)
         run_id = now_stamp()
         run_dir = output_root / f"{run_id}_management_thesis"
         ensure_dir(run_dir)
+        self._ensure_not_cancelled()
         self._emit(
             "workflow_started",
             run_id=run_id,
@@ -75,6 +83,7 @@ class ThesisWorkflow:
         )
 
         write_text(run_dir / "00_topic.md", topic_text.strip())
+        self._ensure_not_cancelled()
         self._emit(
             "topic_saved",
             path=str(run_dir / "00_topic.md"),
@@ -86,8 +95,10 @@ class ThesisWorkflow:
             enabled=self.config.retrieval.enabled,
             provider=self.config.retrieval.provider,
         )
+        self._ensure_not_cancelled()
         literature_items, literature_context = self._collect_literature(topic_text)
         write_json(run_dir / "00_literature.json", literature_items)
+        self._ensure_not_cancelled()
         self._emit(
             "literature_completed",
             count=len(literature_items),
@@ -95,6 +106,7 @@ class ThesisWorkflow:
             items=literature_items,
         )
 
+        self._ensure_not_cancelled()
         self._emit("stage_started", stage="idea")
         idea_data, idea_raw, idea_usage = self._run_idea_stage(
             topic_text=topic_text,
@@ -102,6 +114,7 @@ class ThesisWorkflow:
             forced_title=forced_title,
         )
         write_json(run_dir / "01_idea.json", idea_data)
+        self._ensure_not_cancelled()
         self._emit(
             "stage_completed",
             stage="idea",
@@ -110,6 +123,7 @@ class ThesisWorkflow:
             usage=idea_usage,
         )
 
+        self._ensure_not_cancelled()
         self._emit("stage_started", stage="outline")
         outline_data, outline_raw, outline_usage = self._run_outline_stage(
             topic_text=topic_text,
@@ -117,6 +131,7 @@ class ThesisWorkflow:
             idea_data=idea_data,
         )
         write_json(run_dir / "02_outline.json", outline_data)
+        self._ensure_not_cancelled()
         self._emit(
             "stage_completed",
             stage="outline",
@@ -125,6 +140,7 @@ class ThesisWorkflow:
             usage=outline_usage,
         )
 
+        self._ensure_not_cancelled()
         self._emit("stage_started", stage="paper")
         thesis_md, thesis_raw, paper_usage = self._run_paper_stage(
             topic_text=topic_text,
@@ -133,6 +149,7 @@ class ThesisWorkflow:
             outline_data=outline_data,
         )
         write_text(run_dir / "03_thesis.md", thesis_md)
+        self._ensure_not_cancelled()
         self._emit(
             "stage_completed",
             stage="paper",
@@ -142,10 +159,12 @@ class ThesisWorkflow:
         )
 
         if self.config.runtime.save_raw_responses:
+            self._ensure_not_cancelled()
             write_text(run_dir / "raw_01_idea.txt", idea_raw)
             write_text(run_dir / "raw_02_outline.txt", outline_raw)
             write_text(run_dir / "raw_03_paper.txt", thesis_raw)
 
+        self._ensure_not_cancelled()
         metadata = self._build_metadata(
             run_id=run_id,
             topic_text=topic_text,
@@ -160,6 +179,7 @@ class ThesisWorkflow:
         write_json(run_dir / "run_metadata.json", metadata)
         self._emit("metadata_saved", path=str(run_dir / "run_metadata.json"))
 
+        self._ensure_not_cancelled()
         final_title = forced_title or self._get_title(idea_data)
         if final_title:
             better_dir = self._resolve_unique_dir(
@@ -177,9 +197,11 @@ class ThesisWorkflow:
         return run_dir
 
     def _collect_literature(self, topic_text: str) -> Tuple[list[dict[str, str]], str]:
+        self._ensure_not_cancelled()
         if not self.config.retrieval.enabled:
             return [], "文献检索已关闭。"
         items = self.retriever.search(topic_text)
+        self._ensure_not_cancelled()
         return items, format_literature_context(items)
 
     def _run_idea_stage(
@@ -203,14 +225,12 @@ class ThesisWorkflow:
                 "literature_context": literature_context,
             },
         )
-        raw_text, usage = self.client.complete(
+        raw_text, usage = self._client_complete(
             system_prompt=IDEA_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             temperature=self.config.workflow.temperature,
             max_tokens=max(self.config.llm.max_tokens // 2, 1800),
-            on_delta=lambda piece: self._emit(
-                "stage_delta", stage="idea", round=1, text=piece
-            ),
+            on_delta=lambda piece: self._emit_stage_delta("idea", 1, piece),
         )
         parsed = extract_json_payload(raw_text)
         if not isinstance(parsed, dict):
@@ -251,17 +271,17 @@ class ThesisWorkflow:
         parsed_json: Any = None
 
         for round_idx in range(max_rounds):
+            self._ensure_not_cancelled()
             self._emit("stage_round_started", stage="outline", round=round_idx + 1)
-            raw_text, usage, finish_reason = self.client.complete_with_meta(
+            raw_text, usage, finish_reason = self._client_complete_with_meta(
                 system_prompt=OUTLINE_SYSTEM_PROMPT,
                 user_prompt=current_prompt,
                 temperature=self.config.workflow.temperature,
                 max_tokens=max(self.config.llm.max_tokens // 2, 2200),
-                on_delta=lambda piece, current_round=round_idx + 1: self._emit(
-                    "stage_delta",
-                    stage="outline",
-                    round=current_round,
-                    text=piece,
+                on_delta=lambda piece, current_round=round_idx + 1: self._emit_stage_delta(
+                    "outline",
+                    current_round,
+                    piece,
                 ),
             )
             raw_chunks.append(raw_text)
@@ -346,17 +366,17 @@ class ThesisWorkflow:
         current_prompt = user_prompt
 
         for round_idx in range(max_rounds):
+            self._ensure_not_cancelled()
             self._emit("stage_round_started", stage="paper", round=round_idx + 1)
-            raw_text, usage, finish_reason = self.client.complete_with_meta(
+            raw_text, usage, finish_reason = self._client_complete_with_meta(
                 system_prompt=PAPER_SYSTEM_PROMPT,
                 user_prompt=current_prompt,
                 temperature=self.config.workflow.temperature,
                 max_tokens=self.config.llm.max_tokens,
-                on_delta=lambda piece, current_round=round_idx + 1: self._emit(
-                    "stage_delta",
-                    stage="paper",
-                    round=current_round,
-                    text=piece,
+                on_delta=lambda piece, current_round=round_idx + 1: self._emit_stage_delta(
+                    "paper",
+                    current_round,
+                    piece,
                 ),
             )
             raw_chunks.append(raw_text)
@@ -523,7 +543,7 @@ class ThesisWorkflow:
             f"{broken_text}\n"
             "```\n"
         )
-        raw_text, usage = self.client.complete(
+        raw_text, usage = self._client_complete(
             system_prompt=repair_system_prompt,
             user_prompt=repair_user_prompt,
             temperature=0.0,
@@ -540,6 +560,72 @@ class ThesisWorkflow:
         except Exception:
             # Event reporting should never break the workflow.
             return
+
+    def _emit_stage_delta(self, stage: str, round_idx: int, text: str) -> None:
+        self._ensure_not_cancelled()
+        self._emit(
+            "stage_delta",
+            stage=stage,
+            round=round_idx,
+            text=text,
+        )
+
+    def _is_cancelled(self) -> bool:
+        if not self.cancel_checker:
+            return False
+        try:
+            return bool(self.cancel_checker())
+        except Exception:
+            return False
+
+    def _ensure_not_cancelled(self) -> None:
+        if not self._is_cancelled():
+            return
+        raise WorkflowCancelledError("任务已取消")
+
+    def _client_complete(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> Tuple[str, Dict[str, int]]:
+        self._ensure_not_cancelled()
+        try:
+            return self.client.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                on_delta=on_delta,
+                cancel_checker=self._is_cancelled,
+            )
+        except RequestCancelledError as exc:
+            raise WorkflowCancelledError(str(exc) or "任务已取消") from exc
+
+    def _client_complete_with_meta(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> Tuple[str, Dict[str, int], str]:
+        self._ensure_not_cancelled()
+        try:
+            return self.client.complete_with_meta(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                on_delta=on_delta,
+                cancel_checker=self._is_cancelled,
+            )
+        except RequestCancelledError as exc:
+            raise WorkflowCancelledError(str(exc) or "任务已取消") from exc
 
     def _tail_text(self, text: str, max_chars: int) -> str:
         if max_chars <= 0:

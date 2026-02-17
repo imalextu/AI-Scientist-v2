@@ -12,7 +12,7 @@ from typing import Any, Dict
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
 from paper_agent.config import load_config_from_text
-from paper_agent.workflow import ThesisWorkflow
+from paper_agent.workflow import ThesisWorkflow, WorkflowCancelledError
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 UI_DIR = SCRIPT_DIR / "web_ui"
@@ -26,6 +26,7 @@ DEFAULTS: Dict[str, str] = {
     "topic_text": "",
 }
 JOBS: Dict[str, Dict[str, Any]] = {}
+RUNNING_JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 
 
@@ -89,12 +90,35 @@ def create_job() -> Response:
     return jsonify({"job_id": job_id})
 
 
+@app.post("/api/jobs/<job_id>/cancel")
+def cancel_job(job_id: str) -> Response:
+    with JOBS_LOCK:
+        pending_job = JOBS.pop(job_id, None)
+        running_job = RUNNING_JOBS.get(job_id)
+
+    if pending_job is not None:
+        return jsonify({"status": "cancelled", "message": "任务已取消（尚未启动）"})
+
+    if not running_job:
+        return jsonify({"error": "任务不存在或已结束"}), 404
+
+    cancel_event = running_job.get("cancel_event")
+    if isinstance(cancel_event, threading.Event):
+        cancel_event.set()
+
+    return jsonify({"status": "cancelling", "message": "已发送停止请求，正在终止任务"})
+
+
 @app.get("/api/jobs/<job_id>/events")
 def stream_job(job_id: str) -> Response:
     with JOBS_LOCK:
         job = JOBS.pop(job_id, None)
     if not job:
         return jsonify({"error": "任务不存在或已开始执行"}), 404
+
+    cancel_event = threading.Event()
+    with JOBS_LOCK:
+        RUNNING_JOBS[job_id] = {"cancel_event": cancel_event}
 
     def event_stream() -> Any:
         updates: queue.Queue[tuple[str, Dict[str, Any]] | None] = queue.Queue(
@@ -124,15 +148,26 @@ def stream_job(job_id: str) -> Response:
                 config = load_config_from_text(
                     job["config_text"], project_root=SCRIPT_DIR
                 )
-                workflow = ThesisWorkflow(config, event_handler=emit)
+                workflow = ThesisWorkflow(
+                    config,
+                    event_handler=emit,
+                    cancel_checker=cancel_event.is_set,
+                )
                 run_dir = workflow.run(
                     topic_text=job["topic_text"],
                     forced_title=job["forced_title"],
                 )
-                emit("done", {"run_dir": str(run_dir)})
+                if cancel_event.is_set():
+                    emit("job_cancelled", {"message": "任务已停止"})
+                else:
+                    emit("done", {"run_dir": str(run_dir)})
+            except WorkflowCancelledError:
+                emit("job_cancelled", {"message": "任务已停止"})
             except Exception as exc:
                 emit("job_error", {"message": str(exc)})
             finally:
+                with JOBS_LOCK:
+                    RUNNING_JOBS.pop(job_id, None)
                 try:
                     updates.put_nowait(None)
                 except queue.Full:

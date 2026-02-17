@@ -37,7 +37,13 @@
 
           <div class="actions">
             <button id="startBtn" type="button">生成</button>
-            <button id="stopBtn" type="button" class="ghost" disabled>停止显示</button>
+            <button id="stopBtn" type="button" class="ghost" disabled>停止任务</button>
+          </div>
+
+          <div class="field history-field">
+            <label for="historyDirInput">历史输出目录（可选）</label>
+            <input id="historyDirInput" type="file" webkitdirectory directory multiple />
+            <p class="hint">选择单个 run 目录，例如 outputs/20260216_234256_xxx</p>
           </div>
 
           <p id="statusLine">状态：等待开始</p>
@@ -51,17 +57,50 @@
           </div>
 
           <div class="card">
-            <h2>01 选题设计 JSON</h2>
+            <div class="card-head">
+              <h2>01 选题设计 JSON</h2>
+              <button
+                type="button"
+                class="copy-btn ghost"
+                data-copy-target="ideaOutput"
+                data-label-default="复制"
+                data-label-copied="已复制"
+              >
+                复制
+              </button>
+            </div>
             <pre id="ideaOutput"></pre>
           </div>
 
           <div class="card">
-            <h2>02 论文大纲 JSON</h2>
+            <div class="card-head">
+              <h2>02 论文大纲 JSON</h2>
+              <button
+                type="button"
+                class="copy-btn ghost"
+                data-copy-target="outlineOutput"
+                data-label-default="复制"
+                data-label-copied="已复制"
+              >
+                复制
+              </button>
+            </div>
             <pre id="outlineOutput"></pre>
           </div>
 
           <div class="card">
-            <h2>03 论文正文 Markdown</h2>
+            <div class="card-head">
+              <h2>03 论文正文 Markdown</h2>
+              <button
+                type="button"
+                class="copy-btn ghost"
+                data-copy-target="paperOutput"
+                data-label-default="复制"
+                data-label-copied="已复制"
+              >
+                复制
+              </button>
+            </div>
             <pre id="paperOutput"></pre>
           </div>
         </section>

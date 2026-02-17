@@ -40,6 +40,30 @@
             <button id="stopBtn" type="button" class="ghost" disabled>停止任务</button>
           </div>
 
+          <div class="field cache-field">
+            <label for="cacheSelect">缓存列表</label>
+            <div class="inline-actions">
+              <select id="cacheSelect"></select>
+              <button id="refreshCacheBtn" type="button" class="ghost">刷新</button>
+              <button id="loadCacheBtn" type="button" class="ghost">恢复缓存</button>
+            </div>
+            <div class="inline-actions">
+              <select id="resumeStageSelect">
+                <option value="literature">从 00 文献检索 开始</option>
+                <option value="research">从 00 研究树搜索 开始</option>
+                <option value="idea">从 01 选题设计 开始</option>
+                <option value="outline">从 02 论文大纲 开始</option>
+                <option value="paper">从 03 论文正文 开始</option>
+              </select>
+              <select id="resumeTargetSelect">
+                <option value="same">仅运行该阶段</option>
+                <option value="paper">继续到论文完成</option>
+              </select>
+              <button id="resumeBtn" type="button">从缓存继续运行</button>
+            </div>
+            <p class="hint">每个阶段右侧支持“缓存”按钮，点击后会把该阶段及之前数据保存到列表。</p>
+          </div>
+
           <div class="field history-field">
             <label for="historyDirInput">历史输出目录（可选）</label>
             <input id="historyDirInput" type="file" webkitdirectory directory multiple />
@@ -59,15 +83,20 @@
           <div class="card">
             <div class="card-head">
               <h2>00 文献检索 JSON</h2>
-              <button
-                type="button"
-                class="copy-btn ghost"
-                data-copy-target="literatureOutput"
-                data-label-default="复制"
-                data-label-copied="已复制"
-              >
-                复制
-              </button>
+              <div class="card-actions">
+                <button type="button" class="cache-btn ghost" data-cache-stage="literature">
+                  缓存
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="literatureOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
             </div>
             <pre id="literatureOutput"></pre>
           </div>
@@ -75,15 +104,20 @@
           <div class="card">
             <div class="card-head">
               <h2>00 研究树搜索 JSON</h2>
-              <button
-                type="button"
-                class="copy-btn ghost"
-                data-copy-target="researchOutput"
-                data-label-default="复制"
-                data-label-copied="已复制"
-              >
-                复制
-              </button>
+              <div class="card-actions">
+                <button type="button" class="cache-btn ghost" data-cache-stage="research">
+                  缓存
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="researchOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
             </div>
             <pre id="researchOutput"></pre>
           </div>
@@ -91,15 +125,20 @@
           <div class="card">
             <div class="card-head">
               <h2>01 选题设计 JSON</h2>
-              <button
-                type="button"
-                class="copy-btn ghost"
-                data-copy-target="ideaOutput"
-                data-label-default="复制"
-                data-label-copied="已复制"
-              >
-                复制
-              </button>
+              <div class="card-actions">
+                <button type="button" class="cache-btn ghost" data-cache-stage="idea">
+                  缓存
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="ideaOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
             </div>
             <pre id="ideaOutput"></pre>
           </div>
@@ -107,15 +146,20 @@
           <div class="card">
             <div class="card-head">
               <h2>02 论文大纲 JSON</h2>
-              <button
-                type="button"
-                class="copy-btn ghost"
-                data-copy-target="outlineOutput"
-                data-label-default="复制"
-                data-label-copied="已复制"
-              >
-                复制
-              </button>
+              <div class="card-actions">
+                <button type="button" class="cache-btn ghost" data-cache-stage="outline">
+                  缓存
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="outlineOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
             </div>
             <pre id="outlineOutput"></pre>
           </div>
@@ -123,15 +167,20 @@
           <div class="card">
             <div class="card-head">
               <h2>03 论文正文 Markdown</h2>
-              <button
-                type="button"
-                class="copy-btn ghost"
-                data-copy-target="paperOutput"
-                data-label-default="复制"
-                data-label-copied="已复制"
-              >
-                复制
-              </button>
+              <div class="card-actions">
+                <button type="button" class="cache-btn ghost" data-cache-stage="paper">
+                  缓存
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="paperOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
             </div>
             <pre id="paperOutput"></pre>
           </div>

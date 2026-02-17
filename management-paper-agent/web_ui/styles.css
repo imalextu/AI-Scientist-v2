@@ -94,6 +94,12 @@ body {
   margin-bottom: 10px;
 }
 
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .card-head h2 {
   margin: 0;
 }
@@ -111,12 +117,22 @@ label {
 
 input,
 textarea,
+select,
 button {
   font-family: "JetBrains Mono", "Sarasa Mono SC", "SFMono-Regular", monospace;
 }
 
 input,
 textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  color: var(--ink);
+  background: #fdfcf9;
+}
+
+select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -143,6 +159,22 @@ textarea {
   display: flex;
   gap: 10px;
   margin-top: 6px;
+}
+
+.cache-field {
+  margin-top: 12px;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.inline-actions select {
+  min-width: 150px;
+  flex: 1 1 150px;
 }
 
 .history-field {
@@ -209,6 +241,20 @@ button.ghost {
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.cache-btn {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--muted);
+  background: #f6fbf3;
+  white-space: nowrap;
+}
+
+.cache-btn:hover:not(:disabled) {
+  opacity: 1;
 }
 
 #statusLine,

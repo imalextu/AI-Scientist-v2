@@ -4,6 +4,12 @@ const titleInput = document.getElementById("titleInput");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const historyDirInput = document.getElementById("historyDirInput");
+const cacheSelect = document.getElementById("cacheSelect");
+const refreshCacheBtn = document.getElementById("refreshCacheBtn");
+const loadCacheBtn = document.getElementById("loadCacheBtn");
+const resumeStageSelect = document.getElementById("resumeStageSelect");
+const resumeTargetSelect = document.getElementById("resumeTargetSelect");
+const resumeBtn = document.getElementById("resumeBtn");
 const statusLine = document.getElementById("statusLine");
 const pathLine = document.getElementById("pathLine");
 const logOutput = document.getElementById("logOutput");
@@ -13,7 +19,9 @@ const ideaOutput = document.getElementById("ideaOutput");
 const outlineOutput = document.getElementById("outlineOutput");
 const paperOutput = document.getElementById("paperOutput");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
+const cacheButtons = Array.from(document.querySelectorAll(".cache-btn"));
 
+const stageSequence = ["literature", "research", "idea", "outline", "paper"];
 const stageOutputMap = {
   literature: literatureOutput,
   research: researchOutput,
@@ -21,18 +29,26 @@ const stageOutputMap = {
   outline: outlineOutput,
   paper: paperOutput,
 };
-
+const stageLabelMap = {
+  literature: "00 文献检索 JSON",
+  research: "00 研究树搜索 JSON",
+  idea: "01 选题设计 JSON",
+  outline: "02 论文大纲 JSON",
+  paper: "03 论文正文 Markdown",
+};
 const copyTargetLabelMap = {
-  literatureOutput: "00 文献检索 JSON",
-  researchOutput: "00 研究树搜索 JSON",
-  ideaOutput: "01 选题设计 JSON",
-  outlineOutput: "02 论文大纲 JSON",
-  paperOutput: "03 论文正文 Markdown",
+  literatureOutput: stageLabelMap.literature,
+  researchOutput: stageLabelMap.research,
+  ideaOutput: stageLabelMap.idea,
+  outlineOutput: stageLabelMap.outline,
+  paperOutput: stageLabelMap.paper,
 };
 
 let currentSource = null;
 let streamClosedByClient = false;
 let currentJobId = null;
+let cacheManifestMap = new Map();
+let activeCacheId = "";
 
 function nowTag() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -55,18 +71,34 @@ function setRunning(running) {
   startBtn.disabled = running;
   stopBtn.disabled = !running;
   historyDirInput.disabled = running;
+  refreshCacheBtn.disabled = running;
+  if (running) {
+    cacheSelect.disabled = true;
+    loadCacheBtn.disabled = true;
+    resumeStageSelect.disabled = true;
+    resumeTargetSelect.disabled = true;
+    resumeBtn.disabled = true;
+  } else {
+    const hasCache = cacheManifestMap.size > 0;
+    cacheSelect.disabled = !hasCache;
+    loadCacheBtn.disabled = !hasCache;
+    resumeStageSelect.disabled = !hasCache;
+    resumeTargetSelect.disabled = !hasCache;
+    resumeBtn.disabled = !hasCache;
+  }
   if (!running) {
     stopBtn.textContent = "停止任务";
   }
 }
 
-function clearOutputs() {
-  logOutput.textContent = "";
-  literatureOutput.textContent = "";
-  researchOutput.textContent = "";
-  ideaOutput.textContent = "";
-  outlineOutput.textContent = "";
-  paperOutput.textContent = "";
+function clearOutputs(options = {}) {
+  const clearLog = options.clearLog !== false;
+  if (clearLog) {
+    logOutput.textContent = "";
+  }
+  stageSequence.forEach((stage) => {
+    replaceStageText(stage, "");
+  });
   setPath("-");
 }
 
@@ -78,14 +110,37 @@ function parseEventData(evt) {
   }
 }
 
+function inferRunDirFromFilePath(filePath) {
+  const raw = String(filePath || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const normalized = raw.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length <= 1) {
+    return "";
+  }
+  parts.pop();
+  return normalized.startsWith("/") ? `/${parts.join("/")}` : parts.join("/");
+}
+
+function normalizeStage(stage) {
+  const value = String(stage || "").trim().toLowerCase();
+  if (stageOutputMap[value]) {
+    return value;
+  }
+  return "";
+}
+
 function resolveStageTarget(stage) {
   if (!stage) {
     return null;
   }
-  if (stageOutputMap[stage]) {
-    return stageOutputMap[stage];
+  const normalized = normalizeStage(stage);
+  if (normalized) {
+    return stageOutputMap[normalized];
   }
-  if (stage.startsWith("research:")) {
+  if (String(stage).startsWith("research:")) {
     return researchOutput;
   }
   return null;
@@ -211,6 +266,210 @@ function prettyJsonText(text) {
   }
 }
 
+function outputSnapshot() {
+  return {
+    literature: literatureOutput.textContent || "",
+    research: researchOutput.textContent || "",
+    idea: ideaOutput.textContent || "",
+    outline: outlineOutput.textContent || "",
+    paper: paperOutput.textContent || "",
+  };
+}
+
+function updateResumeStageOptions(manifest) {
+  const allowed = new Set(
+    Array.isArray(manifest?.resumable_stages) && manifest.resumable_stages.length
+      ? manifest.resumable_stages
+      : stageSequence
+  );
+  Array.from(resumeStageSelect.options).forEach((option) => {
+    option.disabled = !allowed.has(option.value);
+  });
+  if (resumeStageSelect.value && !allowed.has(resumeStageSelect.value)) {
+    const fallback = Array.from(allowed)[0] || "literature";
+    resumeStageSelect.value = fallback;
+  }
+}
+
+function suggestResumeStage(manifest) {
+  if (!manifest) {
+    return "literature";
+  }
+  const cacheStage = normalizeStage(manifest.stage);
+  const resumable = Array.isArray(manifest.resumable_stages)
+    ? manifest.resumable_stages.filter((item) => !!normalizeStage(item))
+    : [];
+  if (!cacheStage) {
+    return resumable[0] || "literature";
+  }
+  const cacheIdx = stageSequence.indexOf(cacheStage);
+  const nextStage = stageSequence[Math.min(cacheIdx + 1, stageSequence.length - 1)];
+  if (resumable.includes(nextStage)) {
+    return nextStage;
+  }
+  if (resumable.includes(cacheStage)) {
+    return cacheStage;
+  }
+  return resumable[0] || "literature";
+}
+
+function renderCacheOptions(caches, preferredCacheId = "") {
+  cacheManifestMap = new Map();
+  cacheSelect.innerHTML = "";
+
+  if (!Array.isArray(caches) || !caches.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "暂无缓存";
+    cacheSelect.appendChild(option);
+    cacheSelect.disabled = true;
+    loadCacheBtn.disabled = true;
+    resumeStageSelect.disabled = true;
+    resumeTargetSelect.disabled = true;
+    resumeBtn.disabled = true;
+    activeCacheId = "";
+    updateResumeStageOptions(null);
+    return;
+  }
+
+  caches.forEach((cache) => {
+    if (!cache || !cache.cache_id) {
+      return;
+    }
+    cacheManifestMap.set(cache.cache_id, cache);
+    const option = document.createElement("option");
+    const createdAt = cache.created_at || "-";
+    const stageLabel = stageLabelMap[cache.stage] || cache.stage || "-";
+    const title = cache.title || cache.topic_preview || "";
+    option.value = cache.cache_id;
+    option.textContent = `${createdAt} | ${stageLabel}${title ? ` | ${title}` : ""}`;
+    cacheSelect.appendChild(option);
+  });
+
+  cacheSelect.disabled = false;
+  loadCacheBtn.disabled = false;
+  resumeStageSelect.disabled = false;
+  resumeTargetSelect.disabled = false;
+  resumeBtn.disabled = false;
+
+  const targetCacheId =
+    (preferredCacheId && cacheManifestMap.has(preferredCacheId) && preferredCacheId) ||
+    (activeCacheId && cacheManifestMap.has(activeCacheId) && activeCacheId) ||
+    caches[0].cache_id;
+  cacheSelect.value = targetCacheId;
+  activeCacheId = targetCacheId;
+  updateResumeStageOptions(cacheManifestMap.get(targetCacheId));
+}
+
+async function refreshCacheList(preferredCacheId = "") {
+  try {
+    const response = await fetch("/api/cache/list");
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "获取缓存列表失败");
+    }
+    renderCacheOptions(data.caches || [], preferredCacheId);
+  } catch (error) {
+    logLine(`刷新缓存列表失败：${error.message}`);
+  }
+}
+
+async function loadSelectedCache() {
+  if (currentJobId) {
+    setStatus("任务进行中，无法恢复缓存");
+    return;
+  }
+  const cacheId = String(cacheSelect.value || "").trim();
+  if (!cacheId) {
+    setStatus("请先选择缓存");
+    return;
+  }
+
+  setStatus("恢复缓存中");
+  try {
+    const response = await fetch(`/api/cache/${encodeURIComponent(cacheId)}`);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "恢复缓存失败");
+    }
+
+    configInput.value = data.config_text || "";
+    topicInput.value = data.topic_text || "";
+    const outputs = data.outputs || {};
+    stageSequence.forEach((stage) => {
+      replaceStageText(stage, outputs[stage] || "");
+    });
+
+    const manifest = data.cache || {};
+    activeCacheId = manifest.cache_id || cacheId;
+    setPath(`缓存/${activeCacheId}`);
+    updateResumeStageOptions(manifest);
+    resumeStageSelect.value = suggestResumeStage(manifest);
+    setStatus("缓存已恢复");
+    logLine(
+      `已恢复缓存：${activeCacheId}（阶段：${
+        stageLabelMap[manifest.stage] || manifest.stage || "-"
+      }）`
+    );
+  } catch (error) {
+    setStatus("恢复缓存失败");
+    logLine(`恢复缓存失败：${error.message}`);
+  }
+}
+
+async function saveStageCache(stage) {
+  const normalizedStage = normalizeStage(stage);
+  if (!normalizedStage) {
+    setStatus("缓存失败：阶段参数无效");
+    return;
+  }
+
+  const configText = configInput.value.trim();
+  const topicText = topicInput.value.trim();
+  if (!configText) {
+    setStatus("缓存失败：config 为空");
+    return;
+  }
+  if (!topicText) {
+    setStatus("缓存失败：topic 为空");
+    return;
+  }
+
+  const outputs = outputSnapshot();
+  if (!String(outputs[normalizedStage] || "").trim()) {
+    setStatus(`缓存失败：${stageLabelMap[normalizedStage]} 为空`);
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/cache/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stage: normalizedStage,
+        config_text: configText,
+        topic_text: topicText,
+        outputs,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "缓存保存失败");
+    }
+    const cache = data.cache || {};
+    const cacheId = cache.cache_id || "";
+    activeCacheId = cacheId;
+    setStatus(`缓存成功：${cacheId}`);
+    logLine(
+      `缓存成功：${cacheId}（包含阶段：${(cache.stages_included || []).join(", ")}）`
+    );
+    await refreshCacheList(cacheId);
+  } catch (error) {
+    setStatus("缓存失败");
+    logLine(`缓存失败：${error.message}`);
+  }
+}
+
 async function loadHistoryDir(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) {
@@ -266,6 +525,9 @@ async function loadHistoryDir(fileList) {
     setStatus("未在目录中找到 00_literature/00_research_tree/01/02/03 文件");
     return;
   }
+
+  activeCacheId = "";
+  updateResumeStageOptions(null);
   setStatus(`历史结果已加载（${loadedCount}/5）`);
 }
 
@@ -287,6 +549,15 @@ function finishJob() {
 function handleEvent(name, payload) {
   if (name === "status") {
     logLine(payload.message || "任务已启动");
+    return;
+  }
+
+  if (name === "resume_started") {
+    logLine(
+      `从缓存继续：${payload.cache_id || "-"}，起始阶段=${
+        payload.resume_from_stage || "-"
+      }，结束阶段=${payload.resume_to_stage || "-"}`
+    );
     return;
   }
 
@@ -312,10 +583,11 @@ function handleEvent(name, payload) {
 
   if (name === "literature_completed") {
     logLine(`文献检索完成，命中 ${payload.count || 0} 条`);
-    replaceStageText(
-      "literature",
-      JSON.stringify(payload.items || [], null, 2)
-    );
+    replaceStageText("literature", JSON.stringify(payload.items || [], null, 2));
+    const runDir = inferRunDirFromFilePath(payload.path || "");
+    if (runDir) {
+      setPath(runDir);
+    }
     return;
   }
 
@@ -343,9 +615,23 @@ function handleEvent(name, payload) {
     return;
   }
 
+  if (name === "stage_restored") {
+    replaceStageText(payload.stage, payload.content || "");
+    const runDir = inferRunDirFromFilePath(payload.path || "");
+    if (runDir) {
+      setPath(runDir);
+    }
+    logLine(`已从缓存恢复阶段：${payload.stage}`);
+    return;
+  }
+
   if (name === "stage_completed") {
     replaceStageText(payload.stage, payload.content || "");
     const usage = payload.usage || {};
+    const runDir = inferRunDirFromFilePath(payload.path || "");
+    if (runDir) {
+      setPath(runDir);
+    }
     logLine(
       `${payload.stage} 阶段完成（tokens: ${usage.total_tokens || 0}, rounds: ${
         usage.rounds || 1
@@ -394,6 +680,7 @@ function bindSource(jobId) {
 
   const eventNames = [
     "status",
+    "resume_started",
     "workflow_started",
     "literature_started",
     "literature_query_expanded",
@@ -402,6 +689,7 @@ function bindSource(jobId) {
     "stage_round_started",
     "stage_round_completed",
     "stage_delta",
+    "stage_restored",
     "stage_completed",
     "workflow_completed",
     "done",
@@ -425,10 +713,14 @@ function bindSource(jobId) {
   };
 }
 
-async function createJob() {
+async function createJob(options = {}) {
   const configText = configInput.value.trim();
   const topicText = topicInput.value.trim();
   const title = titleInput.value.trim();
+  const resumeCacheId = String(options.resumeCacheId || "").trim();
+  const resumeFromStage = String(options.resumeFromStage || "").trim();
+  const resumeToStage = String(options.resumeToStage || "").trim();
+  const preserveOutputs = options.preserveOutputs === true;
 
   if (!configText) {
     setStatus("config 不能为空");
@@ -444,19 +736,28 @@ async function createJob() {
   }
   currentJobId = null;
 
-  clearOutputs();
+  if (!preserveOutputs) {
+    clearOutputs();
+  }
   setRunning(true);
   setStatus("创建任务中");
 
   try {
+    const requestPayload = {
+      config_text: configText,
+      topic_text: topicText,
+      title,
+    };
+    if (resumeCacheId) {
+      requestPayload.resume_cache_id = resumeCacheId;
+      requestPayload.resume_from_stage = resumeFromStage;
+      requestPayload.resume_to_stage = resumeToStage;
+    }
+
     const response = await fetch("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        config_text: configText,
-        topic_text: topicText,
-        title,
-      }),
+      body: JSON.stringify(requestPayload),
     });
 
     const data = await response.json();
@@ -473,6 +774,43 @@ async function createJob() {
     finishJob();
     logLine(`任务创建失败：${error.message}`);
   }
+}
+
+async function resumeFromCache() {
+  if (currentJobId) {
+    setStatus("任务进行中，无法继续");
+    return;
+  }
+  const cacheId = String(cacheSelect.value || "").trim();
+  if (!cacheId) {
+    setStatus("请先选择缓存");
+    return;
+  }
+
+  const manifest = cacheManifestMap.get(cacheId);
+  if (manifest) {
+    const allowed = Array.isArray(manifest.resumable_stages)
+      ? manifest.resumable_stages
+      : [];
+    if (allowed.length && !allowed.includes(resumeStageSelect.value)) {
+      setStatus(`该缓存不可从 ${resumeStageSelect.value} 开始`);
+      return;
+    }
+  }
+
+  const resumeFromStage = resumeStageSelect.value;
+  const resumeToStage =
+    resumeTargetSelect.value === "same" ? resumeFromStage : "paper";
+  const fromLabel = stageLabelMap[resumeFromStage] || resumeFromStage;
+  const toLabel = stageLabelMap[resumeToStage] || resumeToStage;
+  logLine(`准备从缓存继续：${cacheId}（${fromLabel} -> ${toLabel}）`);
+
+  await createJob({
+    resumeCacheId: cacheId,
+    resumeFromStage,
+    resumeToStage,
+    preserveOutputs: true,
+  });
 }
 
 async function stopJob() {
@@ -538,4 +876,32 @@ copyButtons.forEach((button) => {
   });
 });
 
-loadInitial();
+cacheButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    saveStageCache(button.dataset.cacheStage || "");
+  });
+});
+
+refreshCacheBtn.addEventListener("click", () => {
+  refreshCacheList();
+});
+
+loadCacheBtn.addEventListener("click", () => {
+  loadSelectedCache();
+});
+
+cacheSelect.addEventListener("change", () => {
+  activeCacheId = String(cacheSelect.value || "").trim();
+  updateResumeStageOptions(cacheManifestMap.get(activeCacheId));
+});
+
+resumeBtn.addEventListener("click", () => {
+  resumeFromCache();
+});
+
+async function bootstrap() {
+  await loadInitial();
+  await refreshCacheList();
+}
+
+bootstrap();

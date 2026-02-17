@@ -1,0 +1,82 @@
+[
+  {
+    "title": "Dark sides of artificial intelligence: The dangers of automated decision‐making in search engine advertising",
+    "authors": "Carsten D. Schultz, Christian Koch, Rainer Olbrich",
+    "year": "2023",
+    "venue": "Journal of the Association for Information Science and Technology",
+    "abstract": "Abstract With the growing use of artificial intelligence, search engine providers are increasingly pushing advertisers to use automated bidding strategies based on machine learning. Such automated decision‐making systems leave advertisers in the dark about the data being used and how they can influence the outcome of the decision‐making process. Previous literature on artificial intelligence lacks an understanding of the dangers related to artificially intelligent systems and their lack of transparency. In response, our paper addresses the inherent risks of the automated optimization of advertisers' bidding strategies in search engine advertising. The selected empirical case of a service company therefore demonstrates how data availability can trigger a long‐term decline in advertising performance and how search engine advertising performance metrics develop before and after an event of data scarcity. Based on data collected for 525 days, difference‐in‐differences analysis shows that the algorithmic approach has a considerable and lasting negative impact on advertising performance. Furthermore, the empirical case indicates that self‐regulated learning can initialize a downward spiral that gradually impairs advertising performance. Thus, the aim of this study is to increase awareness regarding automated decision‐making dangers in search engine advertising and help advertisers take preventive measures to reduce the risks of algorithm missteps.",
+    "source": "Crossref (DOI: 10.1002/asi.24798)"
+  },
+  {
+    "title": "Artificial Intelligence in Advertising",
+    "authors": "Jan Kietzmann, Jeannette Paschen, Emily Treen",
+    "year": "2018",
+    "venue": "Journal of Advertising Research",
+    "abstract": "",
+    "source": "Crossref (DOI: 10.2501/jar-2018-035)"
+  },
+  {
+    "title": "An Overview of Search Engine Advertising Research",
+    "authors": "Carsten D. Schultz",
+    "year": "2016",
+    "venue": "Encyclopedia of E-Commerce Development, Implementation, and Management",
+    "abstract": "",
+    "source": "Crossref (DOI: 10.4018/978-1-4666-9787-4.ch024)"
+  },
+  {
+    "title": "Advertising and search engines. A model of leadership in search advertising",
+    "authors": "Federico Etro",
+    "year": "2013",
+    "venue": "Research in Economics",
+    "abstract": "",
+    "source": "Crossref (DOI: 10.1016/j.rie.2012.10.001)"
+  },
+  {
+    "title": "The Impact of Artificial Intelligence on Search Engine",
+    "authors": "Jana Saab",
+    "year": "2023",
+    "venue": "Advances in Computer and Electrical Engineering",
+    "abstract": "In an aim to improve search engine results, AI interferes to boost it. Thus, this chapter investigates the impact of artificial intelligence on search engine. It includes the most advanced techniques of artificial intelligence that improve search engine optimization (SEO) rankings. In order not to fall in the hassle of having no ranking for your website, artificial intelligence can uplift a website position in the search engine. It is important to state that the growth of SEO has an integral role in digital marketing through AI. Moreover, the obtained results in research studies approve that the integration of artificial intelligence is vital for the progress of search engines.",
+    "source": "Crossref (DOI: 10.4018/978-1-6684-6937-8.ch007)"
+  },
+  {
+    "title": "Artificial Intelligence (AI) Advertising",
+    "authors": "Hairong Li",
+    "year": "2023",
+    "venue": "Communication",
+    "abstract": "Artificial intelligence (AI) advertising, or intelligent advertising in short, is a generic term for various forms of brand communication powered by AI technologies. It represents the latest development of digital advertising, which has evolved from interactive advertising to programmatic advertising to intelligent advertising since the 1990s. Advertising today is viewed broadly as brand communication that embraces both paid and non-paid, as well as brand-initiated and consumer-initiated communication about products, services, and ideas. AI is a science that studies and develops the theory, methodology, technology, and application systems for simulating, extending, and expanding human intelligence. It has been increasingly used in brand communication recently, resulting in the rise of a new discipline of intelligent advertising.",
+    "source": "Crossref (DOI: 10.1093/obo/9780199756841-0291)"
+  },
+  {
+    "title": "SEARCH TRIANGLE: INTEGRATING SEARCH INTENTION IN SEARCH ENGINE ADVERTISING",
+    "authors": "Carsten D. Schultz",
+    "year": "2016",
+    "venue": "Global marketing conference proceeding",
+    "abstract": "",
+    "source": "Crossref (DOI: 10.15444/gmc2016.12.01.02)"
+  },
+  {
+    "title": "Construction of Personalized Advertising Accuracy Model Based on Artificial Intelligence",
+    "authors": "Aihua Kuang",
+    "year": "2022",
+    "venue": "2022 International Conference on Artificial Intelligence and Autonomous Robot Systems (AIARS)",
+    "abstract": "",
+    "source": "Crossref (DOI: 10.1109/aiars57204.2022.00095)"
+  },
+  {
+    "title": "人工智能驱动的个性化营销策略研究",
+    "authors": "凤 黄",
+    "year": "2025",
+    "venue": "Educational Theory and Research",
+    "abstract": "随着AI技术的不断进步，越来越多的企业开始将其引入营销领域。借助AI技术，企业能够在多个方面制定更加精准的营销方案，进而提升销售业绩，增强客户的信任与忠诚度。本文分析了个性化营销策略的概念和内涵，人工智能在个性化营销策略中的作用、优势和挑战以及实施过程，以帮助企业更好地把握AI时代的营销机遇。",
+    "source": "Crossref (DOI: 10.61369/etr.12630)"
+  },
+  {
+    "title": "基于人工智能的电力营销服务精准化策略研究",
+    "authors": "维镜 陈, 维辉 陈",
+    "year": "2025",
+    "venue": "智能城市应用",
+    "abstract": "随着智能电网以及能源数字化不断发展，电力营销正从传统的粗放管理模式朝着精细化与智能化的方向转变。人工智能有着强大的数据分析能力以及智能优化能力，已然成为提升电力营销精准化的关键技术。它能够通过分析大量的用户数据来构建精准的用户画像，进而达成营销信息精准投放以及服务资源优化的目的，以此提高营销转化率以及响应速度。并且，智能客服、负荷预测还有自动化营销平台的应用，也在很大程度上提升了企业的运营效率以及业务创新能力。本论文从电力营销精准化的重要性、应用模式以及策略路径这三个方面展开相关研究，说明人工智能不但能够助力提供个性化服务，而且可以推动需求侧管理和综合能源服务的升级，从而为电力企业应对市场竞争以及能源转型给予有力支持。",
+    "source": "Crossref (DOI: 10.33142/sca.v8i9.17952)"
+  }
+]

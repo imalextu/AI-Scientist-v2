@@ -124,7 +124,14 @@ class ThesisWorkflow:
         self.event_handler = event_handler
         self.cancel_checker = cancel_checker
 
-    def run(self, topic_text: str, forced_title: str | None = None) -> Path:
+    def run(
+        self,
+        topic_text: str,
+        forced_title: str | None = None,
+        *,
+        resume_from_stage: str | None = None,
+        resume_cache: Dict[str, Any] | None = None,
+    ) -> Path:
         stage_order = {
             "literature": 1,
             "research": 2,
@@ -135,9 +142,23 @@ class ThesisWorkflow:
         target_stage = str(self.config.workflow.run_until_stage).strip().lower() or "paper"
         if target_stage not in stage_order:
             target_stage = "paper"
+        if resume_from_stage is None:
+            start_stage = "literature"
+        else:
+            start_stage = str(resume_from_stage).strip().lower()
+            if start_stage not in stage_order:
+                raise ValueError(f"无效的 resume_from_stage: {resume_from_stage}")
+        if stage_order[start_stage] > stage_order[target_stage]:
+            raise ValueError(
+                f"resume_from_stage={start_stage} 不能晚于 run_until_stage={target_stage}。"
+            )
         if target_stage == "research" and not self.config.workflow.research_enabled:
             raise ValueError(
                 "workflow.run_until_stage=research 但 workflow.research_enabled=false。"
+            )
+        if start_stage == "research" and not self.config.workflow.research_enabled:
+            raise ValueError(
+                "resume_from_stage=research 但 workflow.research_enabled=false。"
             )
 
         self._ensure_not_cancelled()
@@ -151,6 +172,8 @@ class ThesisWorkflow:
             run_id=run_id,
             output_root=str(output_root),
             model=self.config.llm.model,
+            resume_from_stage=start_stage if resume_from_stage else "",
+            run_until_stage=target_stage,
         )
 
         write_text(run_dir / "00_topic.md", topic_text.strip())
@@ -204,8 +227,76 @@ class ThesisWorkflow:
             "rounds": 0,
         }
         executed_stages: list[str] = []
+        restored_stages: list[str] = []
+        cache_payload = resume_cache or {}
 
-        if stage_order["literature"] <= stage_order[target_stage]:
+        def _should_execute(stage: str) -> bool:
+            order = stage_order[stage]
+            return stage_order[start_stage] <= order <= stage_order[target_stage]
+
+        if stage_order[start_stage] > stage_order["literature"]:
+            cached_literature = cache_payload.get("literature_items")
+            if not isinstance(cached_literature, list):
+                raise ValueError("恢复运行缺少 00_literature.json 缓存内容。")
+            if not all(isinstance(item, dict) for item in cached_literature):
+                raise ValueError("缓存的 00_literature.json 格式错误。")
+            literature_items = cached_literature
+            literature_context = format_literature_context(literature_items)
+            write_json(run_dir / "00_literature.json", literature_items)
+            self._emit(
+                "stage_restored",
+                stage="literature",
+                path=str(run_dir / "00_literature.json"),
+                content=json.dumps(literature_items, ensure_ascii=False, indent=2),
+            )
+            restored_stages.append("literature")
+
+        if self.config.workflow.research_enabled and stage_order[start_stage] > stage_order[
+            "research"
+        ]:
+            cached_research = cache_payload.get("research_data")
+            if not isinstance(cached_research, dict):
+                raise ValueError("恢复运行缺少 00_research_tree.json 缓存内容。")
+            research_data = cached_research
+            research_context = self._format_research_context(research_data)
+            write_json(run_dir / "00_research_tree.json", research_data)
+            self._emit(
+                "stage_restored",
+                stage="research",
+                path=str(run_dir / "00_research_tree.json"),
+                content=json.dumps(research_data, ensure_ascii=False, indent=2),
+            )
+            restored_stages.append("research")
+
+        if stage_order[start_stage] > stage_order["idea"]:
+            cached_idea = cache_payload.get("idea_data")
+            if not isinstance(cached_idea, dict):
+                raise ValueError("恢复运行缺少 01_idea.json 缓存内容。")
+            idea_data = cached_idea
+            write_json(run_dir / "01_idea.json", idea_data)
+            self._emit(
+                "stage_restored",
+                stage="idea",
+                path=str(run_dir / "01_idea.json"),
+                content=json.dumps(idea_data, ensure_ascii=False, indent=2),
+            )
+            restored_stages.append("idea")
+
+        if stage_order[start_stage] > stage_order["outline"]:
+            cached_outline = cache_payload.get("outline_data")
+            if not isinstance(cached_outline, dict):
+                raise ValueError("恢复运行缺少 02_outline.json 缓存内容。")
+            outline_data = cached_outline
+            write_json(run_dir / "02_outline.json", outline_data)
+            self._emit(
+                "stage_restored",
+                stage="outline",
+                path=str(run_dir / "02_outline.json"),
+                content=json.dumps(outline_data, ensure_ascii=False, indent=2),
+            )
+            restored_stages.append("outline")
+
+        if _should_execute("literature"):
             self._emit(
                 "literature_started",
                 enabled=self.config.retrieval.enabled,
@@ -223,10 +314,7 @@ class ThesisWorkflow:
             )
             executed_stages.append("literature")
 
-        if (
-            self.config.workflow.research_enabled
-            and stage_order["research"] <= stage_order[target_stage]
-        ):
+        if self.config.workflow.research_enabled and _should_execute("research"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="research")
             (
@@ -249,7 +337,7 @@ class ThesisWorkflow:
             )
             executed_stages.append("research")
 
-        if stage_order["idea"] <= stage_order[target_stage]:
+        if _should_execute("idea"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="idea")
             idea_data, idea_raw, idea_usage = self._run_idea_stage(
@@ -269,7 +357,7 @@ class ThesisWorkflow:
             )
             executed_stages.append("idea")
 
-        if stage_order["outline"] <= stage_order[target_stage]:
+        if _should_execute("outline"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="outline")
             outline_data, outline_raw, outline_usage = self._run_outline_stage(
@@ -289,7 +377,7 @@ class ThesisWorkflow:
             )
             executed_stages.append("outline")
 
-        if stage_order["paper"] <= stage_order[target_stage]:
+        if _should_execute("paper"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="paper")
             thesis_md, thesis_raw, paper_usage = self._run_paper_stage(
@@ -327,6 +415,8 @@ class ThesisWorkflow:
             topic_text=topic_text,
             run_until_stage=target_stage,
             executed_stages=executed_stages,
+            restored_stages=restored_stages,
+            resume_from_stage=start_stage if resume_from_stage else "",
             research_data=research_data,
             idea_data=idea_data,
             outline_data=outline_data,
@@ -342,7 +432,7 @@ class ThesisWorkflow:
 
         self._ensure_not_cancelled()
         final_title = ""
-        if "idea" in executed_stages:
+        if idea_data:
             final_title = forced_title or self._get_title(idea_data)
         if final_title:
             better_dir = self._resolve_unique_dir(
@@ -1108,6 +1198,8 @@ class ThesisWorkflow:
         topic_text: str,
         run_until_stage: str,
         executed_stages: list[str],
+        restored_stages: list[str],
+        resume_from_stage: str,
         research_data: Dict[str, Any],
         idea_data: Dict[str, Any],
         outline_data: Dict[str, Any],
@@ -1132,6 +1224,8 @@ class ThesisWorkflow:
             "execution": {
                 "run_until_stage": run_until_stage,
                 "executed_stages": executed_stages,
+                "resume_from_stage": resume_from_stage,
+                "restored_stages": restored_stages,
             },
             "research": {
                 "enabled": self.config.workflow.research_enabled,

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import queue
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -28,6 +30,168 @@ DEFAULTS: Dict[str, str] = {
 JOBS: Dict[str, Dict[str, Any]] = {}
 RUNNING_JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
+
+STAGE_SEQUENCE = ["literature", "research", "idea", "outline", "paper"]
+STAGE_ORDER = {name: idx + 1 for idx, name in enumerate(STAGE_SEQUENCE)}
+STAGE_FILE_SPECS: Dict[str, tuple[str, str]] = {
+    "literature": ("00_literature.json", "json"),
+    "research": ("00_research_tree.json", "json"),
+    "idea": ("01_idea.json", "json"),
+    "outline": ("02_outline.json", "json"),
+    "paper": ("03_thesis.md", "text"),
+}
+CACHE_ROOT = SCRIPT_DIR / ".cache_store"
+CACHE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def parse_stage(value: Any) -> str | None:
+    stage = str(value or "").strip().lower()
+    if stage in STAGE_ORDER:
+        return stage
+    return None
+
+
+def stages_up_to(stage: str) -> list[str]:
+    return [name for name in STAGE_SEQUENCE if STAGE_ORDER[name] <= STAGE_ORDER[stage]]
+
+
+def resumable_stages_for_cache(stage: str) -> list[str]:
+    stage_idx = STAGE_SEQUENCE.index(stage)
+    max_idx = min(stage_idx + 1, len(STAGE_SEQUENCE) - 1)
+    return STAGE_SEQUENCE[: max_idx + 1]
+
+
+def normalize_cache_id(raw_value: Any) -> str:
+    cache_id = str(raw_value or "").strip()
+    if not cache_id or not CACHE_ID_PATTERN.fullmatch(cache_id):
+        raise ValueError("cache_id 非法")
+    return cache_id
+
+
+def ensure_cache_root() -> Path:
+    CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    return CACHE_ROOT
+
+
+def resolve_cache_dir(cache_id: str) -> Path:
+    return ensure_cache_root() / cache_id
+
+
+def write_json_file(path: Path, payload: Any) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def read_json_file(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_cache_manifest(cache_id: str) -> Dict[str, Any]:
+    manifest_path = resolve_cache_dir(cache_id) / "cache_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"未找到缓存: {cache_id}")
+    payload = read_json_file(manifest_path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"缓存元数据格式错误: {cache_id}")
+    payload["cache_id"] = cache_id
+    return payload
+
+
+def read_cache_outputs(cache_id: str) -> Dict[str, str]:
+    cache_dir = resolve_cache_dir(cache_id)
+    outputs: Dict[str, str] = {}
+    for stage in STAGE_SEQUENCE:
+        file_name, content_type = STAGE_FILE_SPECS[stage]
+        path = cache_dir / file_name
+        if not path.exists():
+            continue
+        raw_text = path.read_text(encoding="utf-8")
+        if content_type == "json":
+            parsed = json.loads(raw_text)
+            outputs[stage] = json.dumps(parsed, ensure_ascii=False, indent=2)
+        else:
+            outputs[stage] = raw_text
+    return outputs
+
+
+def build_resume_cache_payload(cache_id: str) -> Dict[str, Any]:
+    cache_dir = resolve_cache_dir(cache_id)
+    payload: Dict[str, Any] = {}
+
+    literature_file = cache_dir / STAGE_FILE_SPECS["literature"][0]
+    if literature_file.exists():
+        literature_data = read_json_file(literature_file)
+        if not isinstance(literature_data, list):
+            raise ValueError("缓存中的 00_literature.json 不是数组")
+        payload["literature_items"] = literature_data
+
+    research_file = cache_dir / STAGE_FILE_SPECS["research"][0]
+    if research_file.exists():
+        research_data = read_json_file(research_file)
+        if not isinstance(research_data, dict):
+            raise ValueError("缓存中的 00_research_tree.json 不是对象")
+        payload["research_data"] = research_data
+
+    idea_file = cache_dir / STAGE_FILE_SPECS["idea"][0]
+    if idea_file.exists():
+        idea_data = read_json_file(idea_file)
+        if not isinstance(idea_data, dict):
+            raise ValueError("缓存中的 01_idea.json 不是对象")
+        payload["idea_data"] = idea_data
+
+    outline_file = cache_dir / STAGE_FILE_SPECS["outline"][0]
+    if outline_file.exists():
+        outline_data = read_json_file(outline_file)
+        if not isinstance(outline_data, dict):
+            raise ValueError("缓存中的 02_outline.json 不是对象")
+        payload["outline_data"] = outline_data
+
+    return payload
+
+
+def normalize_manifest(payload: Any, fallback_cache_id: str) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    stage = parse_stage(payload.get("stage"))
+    if not stage:
+        return None
+    cache_id = str(payload.get("cache_id") or fallback_cache_id).strip() or fallback_cache_id
+    created_at = str(payload.get("created_at") or "")
+    stages_included = payload.get("stages_included")
+    if not isinstance(stages_included, list) or not stages_included:
+        stages_included = stages_up_to(stage)
+    else:
+        cleaned: list[str] = []
+        for item in stages_included:
+            parsed = parse_stage(item)
+            if parsed and parsed not in cleaned:
+                cleaned.append(parsed)
+        if not cleaned:
+            cleaned = stages_up_to(stage)
+        stages_included = cleaned
+    resumable = payload.get("resumable_stages")
+    if not isinstance(resumable, list) or not resumable:
+        resumable = resumable_stages_for_cache(stage)
+    else:
+        cleaned_resume: list[str] = []
+        for item in resumable:
+            parsed = parse_stage(item)
+            if parsed and parsed not in cleaned_resume:
+                cleaned_resume.append(parsed)
+        if not cleaned_resume:
+            cleaned_resume = resumable_stages_for_cache(stage)
+        resumable = cleaned_resume
+    return {
+        "cache_id": cache_id,
+        "created_at": created_at,
+        "stage": stage,
+        "stages_included": stages_included,
+        "resumable_stages": resumable,
+        "title": str(payload.get("title") or "").strip(),
+        "topic_preview": str(payload.get("topic_preview") or "").strip(),
+    }
 
 
 def resolve_input_path(path_str: str) -> Path:
@@ -67,6 +231,136 @@ def initial() -> Response:
     return jsonify(DEFAULTS)
 
 
+@app.post("/api/cache/save")
+def save_cache() -> Response:
+    payload = request.get_json(silent=True) or {}
+    stage = parse_stage(payload.get("stage"))
+    if not stage:
+        return jsonify({"error": "stage 非法"}), 400
+
+    config_text = str(payload.get("config_text", "")).strip()
+    topic_text = str(payload.get("topic_text", "")).strip()
+    outputs = payload.get("outputs")
+
+    if not config_text:
+        return jsonify({"error": "config_text 不能为空"}), 400
+    if not topic_text:
+        return jsonify({"error": "topic_text 不能为空"}), 400
+    if not isinstance(outputs, dict):
+        return jsonify({"error": "outputs 格式错误"}), 400
+
+    required_stages = stages_up_to(stage)
+    included_stages: list[str] = []
+    parsed_outputs: Dict[str, Any] = {}
+    for stage_name in required_stages:
+        raw_text = str(outputs.get(stage_name, "")).strip()
+        if not raw_text:
+            if stage_name == "research" and stage != "research":
+                continue
+            return jsonify({"error": f"{stage_name} 阶段内容为空，无法缓存"}), 400
+
+        file_name, content_type = STAGE_FILE_SPECS[stage_name]
+        if content_type == "json":
+            try:
+                parsed_outputs[stage_name] = json.loads(raw_text)
+            except json.JSONDecodeError:
+                return (
+                    jsonify(
+                        {"error": f"{file_name} 不是合法 JSON，当前阶段可能尚未完成"}
+                    ),
+                    400,
+                )
+        else:
+            parsed_outputs[stage_name] = raw_text
+        included_stages.append(stage_name)
+
+    cache_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    cache_dir = resolve_cache_dir(cache_id)
+    cache_dir.mkdir(parents=True, exist_ok=False)
+
+    (cache_dir / "config.yaml").write_text(f"{config_text}\n", encoding="utf-8")
+    (cache_dir / "00_topic.md").write_text(f"{topic_text}\n", encoding="utf-8")
+
+    for stage_name in included_stages:
+        file_name, content_type = STAGE_FILE_SPECS[stage_name]
+        target_file = cache_dir / file_name
+        if content_type == "json":
+            write_json_file(target_file, parsed_outputs[stage_name])
+        else:
+            target_file.write_text(parsed_outputs[stage_name], encoding="utf-8")
+
+    title = ""
+    idea_obj = parsed_outputs.get("idea")
+    if isinstance(idea_obj, dict):
+        title = str(idea_obj.get("thesis_title_cn") or "").strip()
+    topic_preview = re.sub(r"\s+", " ", topic_text).strip()[:120]
+
+    manifest = {
+        "cache_id": cache_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "stage": stage,
+        "stages_included": included_stages,
+        "resumable_stages": resumable_stages_for_cache(stage),
+        "title": title,
+        "topic_preview": topic_preview,
+    }
+    write_json_file(cache_dir / "cache_manifest.json", manifest)
+    return jsonify({"cache": manifest})
+
+
+@app.get("/api/cache/list")
+def list_caches() -> Response:
+    root = ensure_cache_root()
+    caches: list[Dict[str, Any]] = []
+    for path in root.iterdir():
+        if not path.is_dir():
+            continue
+        manifest_path = path / "cache_manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            raw = read_json_file(manifest_path)
+            manifest = normalize_manifest(raw, path.name)
+            if not manifest:
+                continue
+            caches.append(manifest)
+        except Exception:
+            continue
+    caches.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return jsonify({"caches": caches})
+
+
+@app.get("/api/cache/<cache_id>")
+def get_cache(cache_id: str) -> Response:
+    try:
+        normalized_cache_id = normalize_cache_id(cache_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        raw_manifest = read_cache_manifest(normalized_cache_id)
+        manifest = normalize_manifest(raw_manifest, normalized_cache_id)
+        if not manifest:
+            raise ValueError("缓存元数据缺少必要字段")
+        outputs = read_cache_outputs(normalized_cache_id)
+    except FileNotFoundError:
+        return jsonify({"error": "缓存不存在"}), 404
+    except Exception as exc:
+        return jsonify({"error": f"读取缓存失败: {exc}"}), 500
+
+    cache_dir = resolve_cache_dir(normalized_cache_id)
+    config_text = read_optional_text(cache_dir / "config.yaml")
+    topic_text = read_optional_text(cache_dir / "00_topic.md")
+    return jsonify(
+        {
+            "cache": manifest,
+            "config_text": config_text,
+            "topic_text": topic_text,
+            "outputs": outputs,
+        }
+    )
+
+
 @app.post("/api/jobs")
 def create_job() -> Response:
     payload = request.get_json(silent=True) or {}
@@ -74,11 +368,64 @@ def create_job() -> Response:
     topic_text = str(payload.get("topic_text", "")).strip()
     forced_title_raw = str(payload.get("title", "")).strip()
     forced_title = forced_title_raw or None
+    resume_cache_id_raw = str(payload.get("resume_cache_id", "")).strip()
+    resume_from_stage = ""
+    resume_to_stage = ""
 
     if not config_text:
         return jsonify({"error": "config_text 不能为空"}), 400
     if not topic_text:
         return jsonify({"error": "topic_text 不能为空"}), 400
+
+    if resume_cache_id_raw:
+        try:
+            resume_cache_id = normalize_cache_id(resume_cache_id_raw)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        try:
+            raw_manifest = read_cache_manifest(resume_cache_id)
+            manifest = normalize_manifest(raw_manifest, resume_cache_id)
+            if not manifest:
+                return jsonify({"error": "缓存元数据格式错误"}), 400
+        except FileNotFoundError:
+            return jsonify({"error": "缓存不存在"}), 404
+        except Exception as exc:
+            return jsonify({"error": f"读取缓存失败: {exc}"}), 400
+
+        parsed_resume_from = parse_stage(payload.get("resume_from_stage"))
+        if not parsed_resume_from:
+            return jsonify({"error": "resume_from_stage 非法"}), 400
+        resume_from_stage = parsed_resume_from
+
+        resume_to_raw = str(payload.get("resume_to_stage", "")).strip()
+        if resume_to_raw:
+            parsed_resume_to = parse_stage(resume_to_raw)
+            if not parsed_resume_to:
+                return jsonify({"error": "resume_to_stage 非法"}), 400
+            resume_to_stage = parsed_resume_to
+
+        if not resume_to_stage:
+            resume_to_stage = "paper"
+
+        if STAGE_ORDER[resume_from_stage] > STAGE_ORDER[resume_to_stage]:
+            return jsonify({"error": "resume_from_stage 不能晚于 resume_to_stage"}), 400
+
+        resumable_stages = manifest.get("resumable_stages")
+        if isinstance(resumable_stages, list) and resumable_stages:
+            if resume_from_stage not in resumable_stages:
+                return (
+                    jsonify(
+                        {
+                            "error": (
+                                f"该缓存不可从 {resume_from_stage} 继续，"
+                                f"可选: {', '.join(resumable_stages)}"
+                            )
+                        }
+                    ),
+                    400,
+                )
+    else:
+        resume_cache_id = ""
 
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
@@ -86,6 +433,9 @@ def create_job() -> Response:
             "config_text": config_text,
             "topic_text": topic_text,
             "forced_title": forced_title,
+            "resume_cache_id": resume_cache_id,
+            "resume_from_stage": resume_from_stage,
+            "resume_to_stage": resume_to_stage,
         }
     return jsonify({"job_id": job_id})
 
@@ -148,6 +498,23 @@ def stream_job(job_id: str) -> Response:
                 config = load_config_from_text(
                     job["config_text"], project_root=SCRIPT_DIR
                 )
+                resume_cache_payload: Dict[str, Any] | None = None
+                resume_from_stage: str | None = None
+                resume_cache_id = str(job.get("resume_cache_id") or "").strip()
+                resume_to_stage = str(job.get("resume_to_stage") or "").strip()
+                if resume_cache_id:
+                    resume_cache_payload = build_resume_cache_payload(resume_cache_id)
+                    resume_from_stage = str(job.get("resume_from_stage") or "").strip()
+                    if resume_to_stage:
+                        config.workflow.run_until_stage = resume_to_stage
+                    emit(
+                        "resume_started",
+                        {
+                            "cache_id": resume_cache_id,
+                            "resume_from_stage": resume_from_stage,
+                            "resume_to_stage": config.workflow.run_until_stage,
+                        },
+                    )
                 workflow = ThesisWorkflow(
                     config,
                     event_handler=emit,
@@ -156,6 +523,8 @@ def stream_job(job_id: str) -> Response:
                 run_dir = workflow.run(
                     topic_text=job["topic_text"],
                     forced_title=job["forced_title"],
+                    resume_from_stage=resume_from_stage,
+                    resume_cache=resume_cache_payload,
                 )
                 if cancel_event.is_set():
                     emit("job_cancelled", {"message": "任务已停止"})

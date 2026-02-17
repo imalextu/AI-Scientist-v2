@@ -100,7 +100,9 @@ python run.py \
 
 ## 说明
 
-- 文献检索支持 `crossref` / `semantic_scholar` / `arxiv`，可在配置里切换。
+- 文献检索支持 `openalex` / `crossref` / `semantic_scholar` / `arxiv`，默认 `openalex`，可在配置里切换。
+- 文献检索配置已简化为两个字段：`retrieval.provider` 与 `retrieval.max_results`。
+- 文献检索策略：先用题目的中英文两个版本做双路召回，再由一轮 LLM 精排输出最终 `max_results` 条结果。
 - 可通过 `workflow.research_enabled: false` 关闭研究树搜索，仅保留 `literature -> idea -> outline -> paper`。
 - 可通过 `workflow.run_until_stage` 控制调试截断阶段：
   - `literature`：仅执行到 `00_literature.json`

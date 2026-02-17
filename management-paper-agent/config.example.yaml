@@ -16,15 +16,8 @@ paper:
   output_dir: "outputs"
 
 retrieval:
-  enabled: true
-  provider: "crossref" # options: crossref, semantic_scholar, arxiv
-  semantic_scholar:
-    api_key_env: "S2_API_KEY"
-    max_results: 8
-  crossref:
-    max_results: 8
-  arxiv:
-    max_results: 8
+  provider: "openalex" # options: openalex, crossref, semantic_scholar, arxiv
+  max_results: 8
 
 workflow:
   temperature: 0.3

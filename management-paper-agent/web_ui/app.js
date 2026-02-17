@@ -301,6 +301,15 @@ function handleEvent(name, payload) {
     return;
   }
 
+  if (name === "literature_query_expanded") {
+    logLine(
+      `检索词扩展完成（${payload.count || 0} 条）：${(payload.queries || []).join(
+        " | "
+      )}`
+    );
+    return;
+  }
+
   if (name === "literature_completed") {
     logLine(`文献检索完成，命中 ${payload.count || 0} 条`);
     replaceStageText(
@@ -387,6 +396,7 @@ function bindSource(jobId) {
     "status",
     "workflow_started",
     "literature_started",
+    "literature_query_expanded",
     "literature_completed",
     "stage_started",
     "stage_round_started",

@@ -56,30 +56,10 @@ class PaperConfig:
 
 
 @dataclass
-class SemanticScholarConfig:
-    api_key_env: str = "S2_API_KEY"
-    max_results: int = 8
-
-
-@dataclass
-class CrossrefConfig:
-    max_results: int = 8
-
-
-@dataclass
-class ArxivConfig:
-    max_results: int = 8
-
-
-@dataclass
 class RetrievalConfig:
     enabled: bool = True
-    provider: str = "crossref"
-    semantic_scholar: SemanticScholarConfig = field(
-        default_factory=SemanticScholarConfig
-    )
-    crossref: CrossrefConfig = field(default_factory=CrossrefConfig)
-    arxiv: ArxivConfig = field(default_factory=ArxivConfig)
+    provider: str = "openalex"
+    max_results: int = 8
 
 
 @dataclass
@@ -245,25 +225,34 @@ def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
     )
 
     retrieval_raw = raw.get("retrieval", {})
-    ss_raw = retrieval_raw.get("semantic_scholar", {})
-    crossref_raw = retrieval_raw.get("crossref", {})
-    arxiv_raw = retrieval_raw.get("arxiv", {})
+    provider_raw = str(retrieval_raw.get("provider", "openalex")).lower()
+    provider_block = retrieval_raw.get(provider_raw, {})
+    provider_max_results = (
+        provider_block.get("max_results")
+        if isinstance(provider_block, dict)
+        else None
+    )
     retrieval_cfg = RetrievalConfig(
         enabled=_as_bool(retrieval_raw.get("enabled"), True),
-        provider=str(retrieval_raw.get("provider", "crossref")).lower(),
-        semantic_scholar=SemanticScholarConfig(
-            api_key_env=str(ss_raw.get("api_key_env", "S2_API_KEY")),
-            max_results=_as_int(ss_raw.get("max_results"), 8),
-        ),
-        crossref=CrossrefConfig(
-            max_results=_as_int(crossref_raw.get("max_results"), 8),
-        ),
-        arxiv=ArxivConfig(
-            max_results=_as_int(arxiv_raw.get("max_results"), 8),
+        provider=provider_raw,
+        max_results=max(
+            1,
+            _as_int(
+                retrieval_raw.get(
+                    "max_results",
+                    provider_max_results,
+                ),
+                8,
+            ),
         ),
     )
-    if retrieval_cfg.provider not in {"crossref", "semantic_scholar", "arxiv"}:
-        retrieval_cfg.provider = "crossref"
+    if retrieval_cfg.provider not in {
+        "crossref",
+        "semantic_scholar",
+        "arxiv",
+        "openalex",
+    }:
+        retrieval_cfg.provider = "openalex"
 
     workflow_raw = raw.get("workflow", {})
     research_stages = _parse_research_stages(workflow_raw.get("research_stages"))

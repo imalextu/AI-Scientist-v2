@@ -58,6 +58,33 @@ RESEARCH_EVAL_SYSTEM_PROMPT = """
 评分范围 0-100，输出必须是严格 JSON，不要输出解释。
 """.strip()
 
+RETRIEVAL_QUERY_REWRITE_SYSTEM_PROMPT = """
+你是学术检索查询改写助手。你的任务是把用户给出的论文题目改写为中英文两个检索标题。
+输出必须是严格 JSON，格式：
+{
+  "zh_query": "...",
+  "en_query": "..."
+}
+要求：
+1. `zh_query` 保持原标题语义（若输入是中文，可直接使用原标题）。
+2. `en_query` 给出原标题的英文翻译，保持语义等价，不做扩展。
+3. 只返回这两个字段，不要增加其他字段。
+4. 不要输出除 JSON 之外的内容。
+""".strip()
+
+RETRIEVAL_RERANK_SYSTEM_PROMPT = """
+你是学术文献检索精排助手。请从候选文献中选出最相关的结果并排序。
+输出必须是严格 JSON，格式：
+{
+  "selected_ids": [1, 4, 2]
+}
+要求：
+1. 只输出 `selected_ids`，按相关性从高到低排列。
+2. id 必须来自候选列表中的 `id` 字段。
+3. 返回数量不超过请求的 `top_k`。
+4. 不要输出 JSON 之外的内容。
+""".strip()
+
 WorkflowEventHandler = Callable[[str, Dict[str, Any]], None]
 
 
@@ -90,7 +117,10 @@ class ThesisWorkflow:
         self.config = config
         self.project_root = Path(config.project_root).resolve()
         self.client = LLMClient(config.llm)
-        self.retriever = LiteratureRetriever(config.retrieval)
+        self.retriever = LiteratureRetriever(
+            config.retrieval,
+            query_expander=self._expand_literature_queries_with_llm,
+        )
         self.event_handler = event_handler
         self.cancel_checker = cancel_checker
 
@@ -333,9 +363,154 @@ class ThesisWorkflow:
         self._ensure_not_cancelled()
         if not self.config.retrieval.enabled:
             return [], "文献检索已关闭。"
-        items = self.retriever.search(topic_text)
+        candidates = self.retriever.search(topic_text)
+        items = self._rerank_literature_with_llm(topic_text, candidates)
         self._ensure_not_cancelled()
         return items, format_literature_context(items)
+
+    def _expand_literature_queries_with_llm(self, topic_text: str) -> list[str]:
+        self._ensure_not_cancelled()
+        user_prompt = (
+            "请将以下论文题目改写为中英文检索标题。\n\n"
+            f"题目：{topic_text.strip()}\n\n"
+            "请按要求返回 JSON。"
+        )
+        try:
+            response_text, _, _ = self.client.complete_with_meta(
+                system_prompt=RETRIEVAL_QUERY_REWRITE_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                max_tokens=500,
+                cancel_checker=self.cancel_checker,
+            )
+        except RequestCancelledError:
+            raise WorkflowCancelledError("任务已取消")
+        except Exception:
+            return []
+
+        payload = extract_json_payload(response_text)
+        if not isinstance(payload, dict):
+            return []
+
+        def _clean(value: Any) -> str:
+            return re.sub(r"\s+", " ", str(value or "").strip())
+
+        def _first_text(value: Any) -> str:
+            if isinstance(value, str):
+                return _clean(value)
+            if isinstance(value, list):
+                for item in value:
+                    text = _clean(item)
+                    if text:
+                        return text
+            return ""
+
+        zh_query = _first_text(payload.get("zh_query"))
+        en_query = _first_text(payload.get("en_query"))
+
+        # 兼容旧格式：若仍返回数组字段，取首条
+        if not zh_query:
+            zh_query = _first_text(payload.get("zh_queries"))
+        if not en_query:
+            en_query = _first_text(payload.get("en_queries"))
+
+        if not zh_query:
+            zh_query = _clean(topic_text)
+
+        queries: list[str] = []
+        seen: set[str] = set()
+        for query in (zh_query, en_query):
+            key = query.lower()
+            if not query or key in seen:
+                continue
+            seen.add(key)
+            queries.append(query)
+
+        if queries:
+            self._emit(
+                "literature_query_expanded",
+                count=len(queries),
+                queries=queries,
+            )
+        return queries
+
+    def _rerank_literature_with_llm(
+        self,
+        topic_text: str,
+        candidates: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        top_k = max(1, self.config.retrieval.max_results)
+        if not candidates:
+            return []
+
+        pool = candidates[: max(top_k, min(len(candidates), top_k * 4))]
+        payload_items = []
+        for idx, item in enumerate(pool, start=1):
+            payload_items.append(
+                {
+                    "id": idx,
+                    "title": item.get("title", ""),
+                    "authors": item.get("authors", ""),
+                    "year": item.get("year", ""),
+                    "venue": item.get("venue", ""),
+                    "source": item.get("source", ""),
+                    "abstract": (item.get("abstract", "") or "")[:260],
+                }
+            )
+
+        user_prompt = (
+            "请根据题目从候选文献中选出最相关结果并排序。\n\n"
+            f"题目：{topic_text.strip()}\n"
+            f"top_k：{top_k}\n\n"
+            "候选文献（JSON）：\n"
+            f"{json.dumps(payload_items, ensure_ascii=False)}\n\n"
+            "请只返回 JSON。"
+        )
+
+        try:
+            response_text, _, _ = self.client.complete_with_meta(
+                system_prompt=RETRIEVAL_RERANK_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                max_tokens=800,
+                cancel_checker=self.cancel_checker,
+            )
+        except RequestCancelledError:
+            raise WorkflowCancelledError("任务已取消")
+        except Exception:
+            return pool[:top_k]
+
+        payload = extract_json_payload(response_text)
+        if not isinstance(payload, dict):
+            return pool[:top_k]
+
+        raw_ids = payload.get("selected_ids")
+        if not isinstance(raw_ids, list):
+            return pool[:top_k]
+
+        selected_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for value in raw_ids:
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                continue
+            if idx < 1 or idx > len(pool) or idx in seen_ids:
+                continue
+            seen_ids.add(idx)
+            selected_ids.append(idx)
+            if len(selected_ids) >= top_k:
+                break
+
+        ranked: list[dict[str, str]] = [pool[idx - 1] for idx in selected_ids]
+        if len(ranked) < top_k:
+            for idx, item in enumerate(pool, start=1):
+                if idx in seen_ids:
+                    continue
+                ranked.append(item)
+                if len(ranked) >= top_k:
+                    break
+        return ranked
 
     def _run_research_tree_stage(
         self,
@@ -952,6 +1127,7 @@ class ThesisWorkflow:
             "retrieval": {
                 "enabled": self.config.retrieval.enabled,
                 "provider": self.config.retrieval.provider,
+                "max_results": self.config.retrieval.max_results,
             },
             "execution": {
                 "run_until_stage": run_until_stage,

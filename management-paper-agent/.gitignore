@@ -5,3 +5,4 @@ config.yaml
 .notebooks/
 logs/
 outputs/
+outputs_test_partial/

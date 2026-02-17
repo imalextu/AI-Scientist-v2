@@ -1,0 +1,40 @@
+llm:
+  api_key_env: "OPENROUTER_API_KEY"
+  api_key: ""
+  base_url: "https://openrouter.ai/api/v1"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.3
+  max_tokens: 7000
+
+paper:
+  domain: "management"
+  audience: "undergraduate"
+  language: "zh-CN"
+  min_words: 10000
+  max_words: 14000
+  citation_style: "GB/T 7714-2015"
+  output_dir: "outputs"
+
+retrieval:
+  enabled: true
+  provider: "crossref" # options: crossref, semantic_scholar, arxiv
+  semantic_scholar:
+    api_key_env: "S2_API_KEY"
+    max_results: 8
+  crossref:
+    max_results: 8
+  arxiv:
+    max_results: 8
+
+workflow:
+  temperature: 0.3
+  max_section_tokens: 2000
+  idea_prompt: "prompts/idea_generation.md"
+  outline_prompt: "prompts/outline.md"
+  paper_prompt: "prompts/paper_writer.md"
+  outline_max_rounds: 4
+  paper_max_rounds: 6
+  continuation_tail_chars: 12000
+
+runtime:
+  save_raw_responses: true

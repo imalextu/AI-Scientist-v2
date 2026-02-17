@@ -3,10 +3,12 @@
 这是一个独立于主仓库的新项目，结构参考当前 `AI-Scientist-v2` 的实现思路：  
 `配置驱动 + 分阶段工作流 + prompts 模板 + 产物落盘`。
 
-项目目标是生成中文管理学本科论文初稿，流程分为三步：
-1. 选题与研究设计生成（`01_idea.json`）
-2. 论文大纲生成（`02_outline.json`）
-3. 论文正文草稿生成（`03_thesis.md`）
+项目目标是生成中文管理学本科论文初稿，流程分为五步：
+1. 文献检索（`00_literature.json`）
+2. 研究树搜索（`00_research_tree.json`）
+3. 选题与研究设计生成（`01_idea.json`）
+4. 论文大纲生成（`02_outline.json`）
+5. 论文正文草稿生成（`03_thesis.md`）
 
 ## 目录结构
 
@@ -24,7 +26,9 @@ management-paper-agent/
 ├── prompts/
 │   ├── idea_generation.md
 │   ├── outline.md
-│   └── paper_writer.md
+│   ├── paper_writer.md
+│   ├── research_iteration.md
+│   └── research_evaluator.md
 ├── requirements.txt
 └── run.py
 ```
@@ -75,6 +79,8 @@ python web_app.py --config config.yaml --topic-file examples/topic_example.md --
 - 在线编辑 `config.yaml` 内容
 - 在线编辑 topic 文本
 - 点击“生成”后按阶段实时查看：
+  - `00_literature.json` 文献检索结果
+  - `00_research_tree.json` 研究树搜索过程与最优路径
   - `01_idea.json` 生成过程
   - `02_outline.json` 生成过程
   - `03_thesis.md` 生成过程
@@ -95,5 +101,12 @@ python run.py \
 ## 说明
 
 - 文献检索支持 `crossref` / `semantic_scholar` / `arxiv`，可在配置里切换。
+- 可通过 `workflow.research_enabled: false` 关闭研究树搜索，仅保留 `literature -> idea -> outline -> paper`。
+- 可通过 `workflow.run_until_stage` 控制调试截断阶段：
+  - `literature`：仅执行到 `00_literature.json`
+  - `research`：仅执行到 `00_research_tree.json`
+  - `idea`：执行到 `01_idea.json`
+  - `outline`：执行到 `02_outline.json`
+  - `paper`：完整执行（默认）
 - 该项目默认只生成 Markdown 草稿，不自动导出 Word/PDF。
 - 如需学院格式，可在 `prompts/paper_writer.md` 中继续补充版式要求。

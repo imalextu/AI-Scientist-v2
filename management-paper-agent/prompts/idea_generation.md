@@ -6,6 +6,8 @@
 - 受众：{audience}
 - 写作语言：{language}
 - 目标字数：{min_words} - {max_words}
+- 研究树搜索结论：
+{research_context}
 - 参考文献线索：
 {literature_context}
 

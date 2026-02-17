@@ -29,6 +29,30 @@ retrieval:
 workflow:
   temperature: 0.3
   max_section_tokens: 2000
+  run_until_stage: "paper" # options: literature, research, idea, outline, paper
+  research_enabled: true
+  research_prompt: "prompts/research_iteration.md"
+  research_eval_prompt: "prompts/research_evaluator.md"
+  research_max_tokens: 2200
+  research_stages:
+    - key: "problem_framing"
+      name: "问题界定"
+      goal: "明确研究问题、研究对象、边界条件与核心变量。"
+      max_iterations: 2
+      branching_factor: 2
+      keep_top_k: 2
+    - key: "method_design"
+      name: "方法设计"
+      goal: "形成本科可执行的样本、数据来源与分析流程。"
+      max_iterations: 2
+      branching_factor: 2
+      keep_top_k: 2
+    - key: "analysis_and_risk"
+      name: "分析与风险"
+      goal: "完善结果解释路径、风险控制与局限性说明。"
+      max_iterations: 2
+      branching_factor: 2
+      keep_top_k: 2
   idea_prompt: "prompts/idea_generation.md"
   outline_prompt: "prompts/outline.md"
   paper_prompt: "prompts/paper_writer.md"

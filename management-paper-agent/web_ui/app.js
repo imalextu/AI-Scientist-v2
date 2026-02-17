@@ -7,18 +7,24 @@ const historyDirInput = document.getElementById("historyDirInput");
 const statusLine = document.getElementById("statusLine");
 const pathLine = document.getElementById("pathLine");
 const logOutput = document.getElementById("logOutput");
+const literatureOutput = document.getElementById("literatureOutput");
+const researchOutput = document.getElementById("researchOutput");
 const ideaOutput = document.getElementById("ideaOutput");
 const outlineOutput = document.getElementById("outlineOutput");
 const paperOutput = document.getElementById("paperOutput");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 
 const stageOutputMap = {
+  literature: literatureOutput,
+  research: researchOutput,
   idea: ideaOutput,
   outline: outlineOutput,
   paper: paperOutput,
 };
 
 const copyTargetLabelMap = {
+  literatureOutput: "00 文献检索 JSON",
+  researchOutput: "00 研究树搜索 JSON",
   ideaOutput: "01 选题设计 JSON",
   outlineOutput: "02 论文大纲 JSON",
   paperOutput: "03 论文正文 Markdown",
@@ -56,6 +62,8 @@ function setRunning(running) {
 
 function clearOutputs() {
   logOutput.textContent = "";
+  literatureOutput.textContent = "";
+  researchOutput.textContent = "";
   ideaOutput.textContent = "";
   outlineOutput.textContent = "";
   paperOutput.textContent = "";
@@ -70,8 +78,21 @@ function parseEventData(evt) {
   }
 }
 
+function resolveStageTarget(stage) {
+  if (!stage) {
+    return null;
+  }
+  if (stageOutputMap[stage]) {
+    return stageOutputMap[stage];
+  }
+  if (stage.startsWith("research:")) {
+    return researchOutput;
+  }
+  return null;
+}
+
 function appendStageText(stage, text) {
-  const target = stageOutputMap[stage];
+  const target = resolveStageTarget(stage);
   if (!target || !text) {
     return;
   }
@@ -80,7 +101,7 @@ function appendStageText(stage, text) {
 }
 
 function replaceStageText(stage, text) {
-  const target = stageOutputMap[stage];
+  const target = resolveStageTarget(stage);
   if (!target) {
     return;
   }
@@ -208,6 +229,16 @@ async function loadHistoryDir(fileList) {
   logLine(`开始加载历史目录：${folderLabel}`);
 
   const targets = [
+    {
+      stage: "literature",
+      fileName: "00_literature.json",
+      format: prettyJsonText,
+    },
+    {
+      stage: "research",
+      fileName: "00_research_tree.json",
+      format: prettyJsonText,
+    },
     { stage: "idea", fileName: "01_idea.json", format: prettyJsonText },
     { stage: "outline", fileName: "02_outline.json", format: prettyJsonText },
     { stage: "paper", fileName: "03_thesis.md", format: (text) => text || "" },
@@ -232,10 +263,10 @@ async function loadHistoryDir(fileList) {
   }
 
   if (loadedCount === 0) {
-    setStatus("未在目录中找到 01/02/03 文件");
+    setStatus("未在目录中找到 00_literature/00_research_tree/01/02/03 文件");
     return;
   }
-  setStatus(`历史结果已加载（${loadedCount}/3）`);
+  setStatus(`历史结果已加载（${loadedCount}/5）`);
 }
 
 function closeSource() {
@@ -272,6 +303,10 @@ function handleEvent(name, payload) {
 
   if (name === "literature_completed") {
     logLine(`文献检索完成，命中 ${payload.count || 0} 条`);
+    replaceStageText(
+      "literature",
+      JSON.stringify(payload.items || [], null, 2)
+    );
     return;
   }
 

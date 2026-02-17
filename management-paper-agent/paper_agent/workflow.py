@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
-from .config import AppConfig
+from .config import AppConfig, ResearchStageConfig
 from .llm_client import LLMClient, RequestCancelledError
 from .retrieval import LiteratureRetriever, format_literature_context
 from .utils import (
@@ -46,11 +47,36 @@ PAPER_SYSTEM_PROMPT = """
 4. 严禁捏造具体统计结果；如无真实数据，请明确写“示例性分析/待实证验证”。
 """.strip()
 
+RESEARCH_SYSTEM_PROMPT = """
+你是管理学研究方法导师，负责在写作前进行“研究方案树搜索”。
+你每次只生成一个候选研究节点，要求可执行、边界清晰、可用于后续写作。
+输出必须是严格 JSON，不要输出解释。
+""".strip()
+
+RESEARCH_EVAL_SYSTEM_PROMPT = """
+你是研究方案评审人。你将根据阶段目标评估候选研究节点质量，并给出量化评分。
+评分范围 0-100，输出必须是严格 JSON，不要输出解释。
+""".strip()
+
 WorkflowEventHandler = Callable[[str, Dict[str, Any]], None]
 
 
 class WorkflowCancelledError(RuntimeError):
     pass
+
+
+@dataclass
+class ResearchNode:
+    node_id: str
+    parent_id: str | None
+    stage_key: str
+    stage_name: str
+    stage_index: int
+    iteration: int
+    branch_index: int
+    score: float
+    proposal: Dict[str, Any]
+    evaluation: Dict[str, Any]
 
 
 class ThesisWorkflow:
@@ -69,6 +95,21 @@ class ThesisWorkflow:
         self.cancel_checker = cancel_checker
 
     def run(self, topic_text: str, forced_title: str | None = None) -> Path:
+        stage_order = {
+            "literature": 1,
+            "research": 2,
+            "idea": 3,
+            "outline": 4,
+            "paper": 5,
+        }
+        target_stage = str(self.config.workflow.run_until_stage).strip().lower() or "paper"
+        if target_stage not in stage_order:
+            target_stage = "paper"
+        if target_stage == "research" and not self.config.workflow.research_enabled:
+            raise ValueError(
+                "workflow.run_until_stage=research 但 workflow.research_enabled=false。"
+            )
+
         self._ensure_not_cancelled()
         output_root = ensure_dir(self.project_root / self.config.paper.output_dir)
         run_id = now_stamp()
@@ -90,87 +131,177 @@ class ThesisWorkflow:
             topic=topic_text.strip(),
         )
 
-        self._emit(
-            "literature_started",
-            enabled=self.config.retrieval.enabled,
-            provider=self.config.retrieval.provider,
-        )
-        self._ensure_not_cancelled()
-        literature_items, literature_context = self._collect_literature(topic_text)
-        write_json(run_dir / "00_literature.json", literature_items)
-        self._ensure_not_cancelled()
-        self._emit(
-            "literature_completed",
-            count=len(literature_items),
-            path=str(run_dir / "00_literature.json"),
-            items=literature_items,
-        )
+        literature_items: list[dict[str, str]] = []
+        literature_context = "暂无可用文献线索。"
 
-        self._ensure_not_cancelled()
-        self._emit("stage_started", stage="idea")
-        idea_data, idea_raw, idea_usage = self._run_idea_stage(
-            topic_text=topic_text,
-            literature_context=literature_context,
-            forced_title=forced_title,
-        )
-        write_json(run_dir / "01_idea.json", idea_data)
-        self._ensure_not_cancelled()
-        self._emit(
-            "stage_completed",
-            stage="idea",
-            path=str(run_dir / "01_idea.json"),
-            content=json.dumps(idea_data, ensure_ascii=False, indent=2),
-            usage=idea_usage,
-        )
+        research_data: Dict[str, Any] = {
+            "enabled": False,
+            "reason": "research_enabled=false",
+            "stages": [],
+            "best_path": [],
+            "best_score": None,
+        }
+        research_context = "研究树搜索阶段已关闭。"
+        research_raw = ""
+        research_usage: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        idea_data: Dict[str, Any] = {}
+        idea_raw = ""
+        idea_usage: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        outline_data: Dict[str, Any] = {}
+        outline_raw = ""
+        outline_usage: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        thesis_md = ""
+        thesis_raw = ""
+        paper_usage: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        executed_stages: list[str] = []
 
-        self._ensure_not_cancelled()
-        self._emit("stage_started", stage="outline")
-        outline_data, outline_raw, outline_usage = self._run_outline_stage(
-            topic_text=topic_text,
-            literature_context=literature_context,
-            idea_data=idea_data,
-        )
-        write_json(run_dir / "02_outline.json", outline_data)
-        self._ensure_not_cancelled()
-        self._emit(
-            "stage_completed",
-            stage="outline",
-            path=str(run_dir / "02_outline.json"),
-            content=json.dumps(outline_data, ensure_ascii=False, indent=2),
-            usage=outline_usage,
-        )
+        if stage_order["literature"] <= stage_order[target_stage]:
+            self._emit(
+                "literature_started",
+                enabled=self.config.retrieval.enabled,
+                provider=self.config.retrieval.provider,
+            )
+            self._ensure_not_cancelled()
+            literature_items, literature_context = self._collect_literature(topic_text)
+            write_json(run_dir / "00_literature.json", literature_items)
+            self._ensure_not_cancelled()
+            self._emit(
+                "literature_completed",
+                count=len(literature_items),
+                path=str(run_dir / "00_literature.json"),
+                items=literature_items,
+            )
+            executed_stages.append("literature")
 
-        self._ensure_not_cancelled()
-        self._emit("stage_started", stage="paper")
-        thesis_md, thesis_raw, paper_usage = self._run_paper_stage(
-            topic_text=topic_text,
-            literature_context=literature_context,
-            idea_data=idea_data,
-            outline_data=outline_data,
-        )
-        write_text(run_dir / "03_thesis.md", thesis_md)
-        self._ensure_not_cancelled()
-        self._emit(
-            "stage_completed",
-            stage="paper",
-            path=str(run_dir / "03_thesis.md"),
-            content=thesis_md,
-            usage=paper_usage,
-        )
+        if (
+            self.config.workflow.research_enabled
+            and stage_order["research"] <= stage_order[target_stage]
+        ):
+            self._ensure_not_cancelled()
+            self._emit("stage_started", stage="research")
+            (
+                research_data,
+                research_context,
+                research_raw,
+                research_usage,
+            ) = self._run_research_tree_stage(
+                topic_text=topic_text,
+                literature_context=literature_context,
+            )
+            write_json(run_dir / "00_research_tree.json", research_data)
+            self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="research",
+                path=str(run_dir / "00_research_tree.json"),
+                content=json.dumps(research_data, ensure_ascii=False, indent=2),
+                usage=research_usage,
+            )
+            executed_stages.append("research")
+
+        if stage_order["idea"] <= stage_order[target_stage]:
+            self._ensure_not_cancelled()
+            self._emit("stage_started", stage="idea")
+            idea_data, idea_raw, idea_usage = self._run_idea_stage(
+                topic_text=topic_text,
+                literature_context=literature_context,
+                research_context=research_context,
+                forced_title=forced_title,
+            )
+            write_json(run_dir / "01_idea.json", idea_data)
+            self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="idea",
+                path=str(run_dir / "01_idea.json"),
+                content=json.dumps(idea_data, ensure_ascii=False, indent=2),
+                usage=idea_usage,
+            )
+            executed_stages.append("idea")
+
+        if stage_order["outline"] <= stage_order[target_stage]:
+            self._ensure_not_cancelled()
+            self._emit("stage_started", stage="outline")
+            outline_data, outline_raw, outline_usage = self._run_outline_stage(
+                topic_text=topic_text,
+                literature_context=literature_context,
+                research_context=research_context,
+                idea_data=idea_data,
+            )
+            write_json(run_dir / "02_outline.json", outline_data)
+            self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="outline",
+                path=str(run_dir / "02_outline.json"),
+                content=json.dumps(outline_data, ensure_ascii=False, indent=2),
+                usage=outline_usage,
+            )
+            executed_stages.append("outline")
+
+        if stage_order["paper"] <= stage_order[target_stage]:
+            self._ensure_not_cancelled()
+            self._emit("stage_started", stage="paper")
+            thesis_md, thesis_raw, paper_usage = self._run_paper_stage(
+                topic_text=topic_text,
+                literature_context=literature_context,
+                research_context=research_context,
+                idea_data=idea_data,
+                outline_data=outline_data,
+            )
+            write_text(run_dir / "03_thesis.md", thesis_md)
+            self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="paper",
+                path=str(run_dir / "03_thesis.md"),
+                content=thesis_md,
+                usage=paper_usage,
+            )
+            executed_stages.append("paper")
 
         if self.config.runtime.save_raw_responses:
             self._ensure_not_cancelled()
-            write_text(run_dir / "raw_01_idea.txt", idea_raw)
-            write_text(run_dir / "raw_02_outline.txt", outline_raw)
-            write_text(run_dir / "raw_03_paper.txt", thesis_raw)
+            if "research" in executed_stages:
+                write_text(run_dir / "raw_00_research.txt", research_raw)
+            if "idea" in executed_stages:
+                write_text(run_dir / "raw_01_idea.txt", idea_raw)
+            if "outline" in executed_stages:
+                write_text(run_dir / "raw_02_outline.txt", outline_raw)
+            if "paper" in executed_stages:
+                write_text(run_dir / "raw_03_paper.txt", thesis_raw)
 
         self._ensure_not_cancelled()
         metadata = self._build_metadata(
             run_id=run_id,
             topic_text=topic_text,
+            run_until_stage=target_stage,
+            executed_stages=executed_stages,
+            research_data=research_data,
             idea_data=idea_data,
             outline_data=outline_data,
             usage={
+                "research": research_usage,
                 "idea": idea_usage,
                 "outline": outline_usage,
                 "paper": paper_usage,
@@ -180,7 +311,9 @@ class ThesisWorkflow:
         self._emit("metadata_saved", path=str(run_dir / "run_metadata.json"))
 
         self._ensure_not_cancelled()
-        final_title = forced_title or self._get_title(idea_data)
+        final_title = ""
+        if "idea" in executed_stages:
+            final_title = forced_title or self._get_title(idea_data)
         if final_title:
             better_dir = self._resolve_unique_dir(
                 output_root / f"{run_id}_{slugify(final_title)}"
@@ -204,11 +337,394 @@ class ThesisWorkflow:
         self._ensure_not_cancelled()
         return items, format_literature_context(items)
 
+    def _run_research_tree_stage(
+        self,
+        *,
+        topic_text: str,
+        literature_context: str,
+    ) -> Tuple[Dict[str, Any], str, str, Dict[str, int]]:
+        prompt_template = read_text(
+            self.project_root / self.config.workflow.research_prompt
+        )
+        eval_template = read_text(
+            self.project_root / self.config.workflow.research_eval_prompt
+        )
+        usage_total = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        raw_chunks: list[str] = []
+        all_nodes: dict[str, ResearchNode] = {}
+        parent_pool: list[ResearchNode] = []
+        stage_summaries: list[dict[str, Any]] = []
+        node_counter = 0
+        global_round = 0
+
+        for stage_idx, stage_cfg in enumerate(
+            self.config.workflow.research_stages, start=1
+        ):
+            self._ensure_not_cancelled()
+            stage_tag = f"research:{stage_cfg.key}"
+            self._emit("stage_started", stage=stage_tag)
+
+            stage_nodes: list[ResearchNode] = []
+            stage_usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            }
+            iteration_parents = parent_pool[:] if parent_pool else [None]
+
+            for iteration in range(1, stage_cfg.max_iterations + 1):
+                self._ensure_not_cancelled()
+                global_round += 1
+                self._emit(
+                    "stage_round_started",
+                    stage=stage_tag,
+                    round=iteration,
+                )
+
+                for branch_idx in range(1, stage_cfg.branching_factor + 1):
+                    parent = iteration_parents[
+                        (branch_idx - 1) % len(iteration_parents)
+                    ]
+                    proposal, proposal_raw, proposal_usage = (
+                        self._run_research_iteration(
+                            prompt_template=prompt_template,
+                            topic_text=topic_text,
+                            literature_context=literature_context,
+                            stage_cfg=stage_cfg,
+                            stage_idx=stage_idx,
+                            iteration=iteration,
+                            branch_idx=branch_idx,
+                            parent=parent,
+                            stage_nodes=stage_nodes,
+                            emit_round=global_round,
+                        )
+                    )
+                    self._accumulate_usage(usage_total, proposal_usage)
+                    self._accumulate_usage(stage_usage, proposal_usage)
+                    raw_chunks.append(
+                        f"[{stage_tag}][iter={iteration}][branch={branch_idx}]"
+                        f"\n{proposal_raw.strip()}"
+                    )
+
+                    evaluation, eval_raw, eval_usage = self._evaluate_research_iteration(
+                        eval_template=eval_template,
+                        topic_text=topic_text,
+                        literature_context=literature_context,
+                        stage_cfg=stage_cfg,
+                        stage_idx=stage_idx,
+                        iteration=iteration,
+                        proposal=proposal,
+                        parent=parent,
+                    )
+                    self._accumulate_usage(usage_total, eval_usage)
+                    self._accumulate_usage(stage_usage, eval_usage)
+                    raw_chunks.append(
+                        f"[{stage_tag}][iter={iteration}][branch={branch_idx}][evaluation]"
+                        f"\n{eval_raw.strip()}"
+                    )
+
+                    node_counter += 1
+                    node = ResearchNode(
+                        node_id=f"{stage_cfg.key}_n{node_counter}",
+                        parent_id=parent.node_id if parent else None,
+                        stage_key=stage_cfg.key,
+                        stage_name=stage_cfg.name,
+                        stage_index=stage_idx,
+                        iteration=iteration,
+                        branch_index=branch_idx,
+                        score=self._normalize_score(evaluation.get("score")),
+                        proposal=proposal,
+                        evaluation=evaluation,
+                    )
+                    stage_nodes.append(node)
+                    all_nodes[node.node_id] = node
+
+                stage_ranked = sorted(stage_nodes, key=lambda item: item.score, reverse=True)
+                iteration_parents = stage_ranked[: stage_cfg.keep_top_k] or [None]
+                self._emit(
+                    "stage_round_completed",
+                    stage=stage_tag,
+                    round=iteration,
+                    finish_reason="completed",
+                )
+
+            parent_pool = sorted(stage_nodes, key=lambda item: item.score, reverse=True)[
+                : stage_cfg.keep_top_k
+            ]
+            stage_usage["rounds"] = stage_cfg.max_iterations
+            stage_summary = self._summarize_research_stage(
+                stage_cfg=stage_cfg,
+                stage_idx=stage_idx,
+                stage_nodes=stage_nodes,
+                stage_usage=stage_usage,
+            )
+            stage_summaries.append(stage_summary)
+            self._emit(
+                "stage_completed",
+                stage=stage_tag,
+                content=json.dumps(stage_summary, ensure_ascii=False, indent=2),
+                usage=stage_usage,
+            )
+
+        best_node: ResearchNode | None = None
+        if parent_pool:
+            best_node = max(parent_pool, key=lambda item: item.score)
+        elif all_nodes:
+            best_node = max(all_nodes.values(), key=lambda item: item.score)
+
+        best_path = self._build_best_research_path(
+            all_nodes=all_nodes,
+            best_node_id=best_node.node_id if best_node else None,
+        )
+        report: Dict[str, Any] = {
+            "enabled": True,
+            "stages": stage_summaries,
+            "best_score": best_node.score if best_node else None,
+            "best_node_id": best_node.node_id if best_node else None,
+            "best_path": best_path,
+            "total_nodes": len(all_nodes),
+        }
+        usage_total["rounds"] = global_round
+        research_context = self._format_research_context(report)
+        raw_joined = "\n\n\n<!-- RESEARCH ROUND -->\n\n".join(raw_chunks).strip()
+        return report, research_context, raw_joined, usage_total
+
+    def _run_research_iteration(
+        self,
+        *,
+        prompt_template: str,
+        topic_text: str,
+        literature_context: str,
+        stage_cfg: ResearchStageConfig,
+        stage_idx: int,
+        iteration: int,
+        branch_idx: int,
+        parent: ResearchNode | None,
+        stage_nodes: list[ResearchNode],
+        emit_round: int,
+    ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
+        parent_context = (
+            json.dumps(self._serialize_research_node(parent), ensure_ascii=False, indent=2)
+            if parent
+            else "无父节点（当前阶段起始分支）"
+        )
+        local_best = sorted(stage_nodes, key=lambda item: item.score, reverse=True)[:3]
+        tree_snapshot = (
+            json.dumps(
+                [self._serialize_research_node(node) for node in local_best],
+                ensure_ascii=False,
+                indent=2,
+            )
+            if local_best
+            else "当前阶段暂无已评分节点。"
+        )
+        user_prompt = render_template(
+            prompt_template,
+            {
+                "topic": topic_text,
+                "stage_key": stage_cfg.key,
+                "stage_name": stage_cfg.name,
+                "stage_goal": stage_cfg.goal,
+                "stage_index": stage_idx,
+                "stage_total": len(self.config.workflow.research_stages),
+                "iteration": iteration,
+                "branch_index": branch_idx,
+                "literature_context": literature_context,
+                "parent_node": parent_context,
+                "current_tree_snapshot": tree_snapshot,
+            },
+        )
+        raw_text, usage = self._client_complete(
+            system_prompt=RESEARCH_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.config.workflow.temperature,
+            max_tokens=min(
+                self.config.llm.max_tokens, self.config.workflow.research_max_tokens
+            ),
+            on_delta=lambda piece: self._emit_stage_delta("research", emit_round, piece),
+        )
+        parsed = extract_json_payload(raw_text)
+        if not isinstance(parsed, dict):
+            parsed = {"raw_response": raw_text}
+        return parsed, raw_text, usage
+
+    def _evaluate_research_iteration(
+        self,
+        *,
+        eval_template: str,
+        topic_text: str,
+        literature_context: str,
+        stage_cfg: ResearchStageConfig,
+        stage_idx: int,
+        iteration: int,
+        proposal: Dict[str, Any],
+        parent: ResearchNode | None,
+    ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
+        parent_context = (
+            json.dumps(self._serialize_research_node(parent), ensure_ascii=False, indent=2)
+            if parent
+            else "无父节点"
+        )
+        user_prompt = render_template(
+            eval_template,
+            {
+                "topic": topic_text,
+                "stage_key": stage_cfg.key,
+                "stage_name": stage_cfg.name,
+                "stage_goal": stage_cfg.goal,
+                "stage_index": stage_idx,
+                "iteration": iteration,
+                "literature_context": literature_context,
+                "proposal_json": json.dumps(proposal, ensure_ascii=False, indent=2),
+                "parent_node": parent_context,
+            },
+        )
+        raw_text, usage = self._client_complete(
+            system_prompt=RESEARCH_EVAL_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=0.1,
+            max_tokens=1200,
+            on_delta=None,
+        )
+        parsed = extract_json_payload(raw_text)
+        if not isinstance(parsed, dict):
+            parsed = {"raw_response": raw_text}
+        parsed["score"] = self._normalize_score(parsed.get("score"))
+        return parsed, raw_text, usage
+
+    def _summarize_research_stage(
+        self,
+        *,
+        stage_cfg: ResearchStageConfig,
+        stage_idx: int,
+        stage_nodes: list[ResearchNode],
+        stage_usage: Dict[str, int],
+    ) -> Dict[str, Any]:
+        ranked = sorted(stage_nodes, key=lambda item: item.score, reverse=True)
+        top_nodes = ranked[: stage_cfg.keep_top_k]
+        return {
+            "stage_index": stage_idx,
+            "stage_key": stage_cfg.key,
+            "stage_name": stage_cfg.name,
+            "stage_goal": stage_cfg.goal,
+            "max_iterations": stage_cfg.max_iterations,
+            "branching_factor": stage_cfg.branching_factor,
+            "keep_top_k": stage_cfg.keep_top_k,
+            "nodes_explored": len(stage_nodes),
+            "best_score": top_nodes[0].score if top_nodes else None,
+            "top_nodes": [self._serialize_research_node(node) for node in top_nodes],
+            "usage": dict(stage_usage),
+        }
+
+    def _serialize_research_node(self, node: ResearchNode | None) -> Dict[str, Any]:
+        if node is None:
+            return {}
+        return {
+            "node_id": node.node_id,
+            "parent_id": node.parent_id,
+            "stage_key": node.stage_key,
+            "stage_name": node.stage_name,
+            "stage_index": node.stage_index,
+            "iteration": node.iteration,
+            "branch_index": node.branch_index,
+            "score": round(node.score, 2),
+            "proposal": node.proposal,
+            "evaluation": node.evaluation,
+        }
+
+    def _build_best_research_path(
+        self,
+        *,
+        all_nodes: Dict[str, ResearchNode],
+        best_node_id: str | None,
+    ) -> list[Dict[str, Any]]:
+        if not best_node_id:
+            return []
+        path: list[Dict[str, Any]] = []
+        cursor = best_node_id
+        visited: set[str] = set()
+        while cursor and cursor not in visited:
+            visited.add(cursor)
+            node = all_nodes.get(cursor)
+            if not node:
+                break
+            path.append(self._serialize_research_node(node))
+            cursor = node.parent_id
+        path.reverse()
+        return path
+
+    def _format_research_context(self, research_data: Dict[str, Any]) -> str:
+        if not research_data.get("enabled"):
+            return "研究树搜索未启用。"
+
+        lines: list[str] = [
+            "以下为研究树搜索阶段形成的写作前研究结论：",
+        ]
+        for stage in research_data.get("stages", []):
+            if not isinstance(stage, dict):
+                continue
+            stage_name = str(stage.get("stage_name") or stage.get("stage_key") or "阶段")
+            goal = str(stage.get("stage_goal") or "")
+            best_score = stage.get("best_score")
+            lines.append(f"[{stage_name}] 目标：{goal}")
+            lines.append(f"[{stage_name}] 最佳评分：{best_score}")
+            top_nodes = stage.get("top_nodes") or []
+            if isinstance(top_nodes, list) and top_nodes:
+                best_node = top_nodes[0]
+                if isinstance(best_node, dict):
+                    proposal = best_node.get("proposal")
+                    if isinstance(proposal, dict):
+                        candidate_title = proposal.get("candidate_title", "")
+                        question = proposal.get("research_question", "")
+                        method_design = proposal.get("method_design")
+                        if isinstance(method_design, dict):
+                            approach = method_design.get("approach", "")
+                            sample = method_design.get("sample_plan", "")
+                        else:
+                            approach = ""
+                            sample = ""
+                        lines.append(f"[{stage_name}] 最优方案标题：{candidate_title}")
+                        lines.append(f"[{stage_name}] 核心问题：{question}")
+                        lines.append(f"[{stage_name}] 方法路径：{approach}；样本：{sample}")
+
+        best_path = research_data.get("best_path") or []
+        if isinstance(best_path, list) and best_path:
+            lines.append("最佳路径摘要：")
+            for idx, node in enumerate(best_path, start=1):
+                if not isinstance(node, dict):
+                    continue
+                stage_name = str(node.get("stage_name") or node.get("stage_key") or "阶段")
+                score = node.get("score")
+                proposal = node.get("proposal")
+                if isinstance(proposal, dict):
+                    candidate_title = str(proposal.get("candidate_title") or "")
+                    question = str(proposal.get("research_question") or "")
+                    proposal_text = f"标题={candidate_title}; 问题={question}"
+                else:
+                    proposal_text = str(proposal or "")
+                lines.append(
+                    f"路径节点{idx}（{stage_name}, score={score}）：{proposal_text}"
+                )
+        return "\n".join(lines)
+
+    def _normalize_score(self, raw_score: Any) -> float:
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            return 50.0
+        return max(0.0, min(100.0, score))
+
     def _run_idea_stage(
         self,
         *,
         topic_text: str,
         literature_context: str,
+        research_context: str,
         forced_title: str | None,
     ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
         prompt_template = read_text(self.project_root / self.config.workflow.idea_prompt)
@@ -223,6 +739,7 @@ class ThesisWorkflow:
                 "max_words": self.config.paper.max_words,
                 "citation_style": self.config.paper.citation_style,
                 "literature_context": literature_context,
+                "research_context": research_context,
             },
         )
         raw_text, usage = self._client_complete(
@@ -245,6 +762,7 @@ class ThesisWorkflow:
         *,
         topic_text: str,
         literature_context: str,
+        research_context: str,
         idea_data: Dict[str, Any],
     ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
         prompt_template = read_text(
@@ -256,6 +774,7 @@ class ThesisWorkflow:
                 "topic": topic_text,
                 "idea_json": json.dumps(idea_data, ensure_ascii=False, indent=2),
                 "literature_context": literature_context,
+                "research_context": research_context,
             },
         )
         usage_total = {
@@ -336,6 +855,7 @@ class ThesisWorkflow:
         *,
         topic_text: str,
         literature_context: str,
+        research_context: str,
         idea_data: Dict[str, Any],
         outline_data: Dict[str, Any],
     ) -> Tuple[str, str, Dict[str, int]]:
@@ -351,6 +871,7 @@ class ThesisWorkflow:
                 "idea_json": json.dumps(idea_data, ensure_ascii=False, indent=2),
                 "outline_json": json.dumps(outline_data, ensure_ascii=False, indent=2),
                 "literature_context": literature_context,
+                "research_context": research_context,
             },
         )
 
@@ -410,6 +931,9 @@ class ThesisWorkflow:
         *,
         run_id: str,
         topic_text: str,
+        run_until_stage: str,
+        executed_stages: list[str],
+        research_data: Dict[str, Any],
         idea_data: Dict[str, Any],
         outline_data: Dict[str, Any],
         usage: Dict[str, Dict[str, int]],
@@ -428,6 +952,17 @@ class ThesisWorkflow:
             "retrieval": {
                 "enabled": self.config.retrieval.enabled,
                 "provider": self.config.retrieval.provider,
+            },
+            "execution": {
+                "run_until_stage": run_until_stage,
+                "executed_stages": executed_stages,
+            },
+            "research": {
+                "enabled": self.config.workflow.research_enabled,
+                "stage_count": len(self.config.workflow.research_stages),
+                "best_score": research_data.get("best_score"),
+                "best_node_id": research_data.get("best_node_id"),
+                "total_nodes": research_data.get("total_nodes"),
             },
             "usage": usage,
             "idea_title": self._get_title(idea_data),

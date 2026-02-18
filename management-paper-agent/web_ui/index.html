@@ -50,8 +50,8 @@
             <div class="inline-actions">
               <select id="resumeStageSelect">
                 <option value="literature">从 00 文献检索 开始</option>
-                <option value="review">从 00 文献综述 开始</option>
                 <option value="idea">从 01 选题设计 开始</option>
+                <option value="review">从 00 文献综述 开始</option>
                 <option value="outline">从 02 论文大纲 开始</option>
                 <option value="paper">从 03 论文正文 开始</option>
               </select>
@@ -103,27 +103,6 @@
 
           <div class="card">
             <div class="card-head">
-              <h2>00 文献综述 Markdown</h2>
-              <div class="card-actions">
-                <button type="button" class="cache-btn ghost" data-cache-stage="review">
-                  缓存
-                </button>
-                <button
-                  type="button"
-                  class="copy-btn ghost"
-                  data-copy-target="reviewOutput"
-                  data-label-default="复制"
-                  data-label-copied="已复制"
-                >
-                  复制
-                </button>
-              </div>
-            </div>
-            <pre id="reviewOutput"></pre>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
               <h2>01 选题设计 JSON</h2>
               <div class="card-actions">
                 <button type="button" class="cache-btn ghost" data-cache-stage="idea">
@@ -141,6 +120,27 @@
               </div>
             </div>
             <pre id="ideaOutput"></pre>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>00 文献综述 Markdown</h2>
+              <div class="card-actions">
+                <button type="button" class="cache-btn ghost" data-cache-stage="review">
+                  缓存
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="reviewOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
+            </div>
+            <pre id="reviewOutput"></pre>
           </div>
 
           <div class="card">

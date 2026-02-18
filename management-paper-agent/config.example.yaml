@@ -22,7 +22,7 @@ retrieval:
 workflow:
   temperature: 0.3
   max_section_tokens: 2000
-  run_until_stage: "paper" # options: literature, review, idea, outline, paper
+  run_until_stage: "paper" # options: literature, idea, review, outline, paper
   review_prompt: "prompts/literature_review.md"
   review_max_tokens: 6500
   idea_prompt: "prompts/idea_generation.md"

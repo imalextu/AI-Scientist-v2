@@ -31,12 +31,12 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 RUNNING_JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 
-STAGE_SEQUENCE = ["literature", "review", "idea", "outline", "paper"]
+STAGE_SEQUENCE = ["literature", "idea", "review", "outline", "paper"]
 STAGE_ORDER = {name: idx + 1 for idx, name in enumerate(STAGE_SEQUENCE)}
 STAGE_FILE_SPECS: Dict[str, tuple[str, str]] = {
     "literature": ("00_literature.json", "json"),
-    "review": ("00_literature_review.md", "text"),
     "idea": ("01_idea.json", "json"),
+    "review": ("00_literature_review.md", "text"),
     "outline": ("02_outline.json", "json"),
     "paper": ("03_thesis.md", "text"),
 }
@@ -127,17 +127,17 @@ def build_resume_cache_payload(cache_id: str) -> Dict[str, Any]:
             raise ValueError("缓存中的 00_literature.json 不是数组")
         payload["literature_items"] = literature_data
 
-    review_file = cache_dir / STAGE_FILE_SPECS["review"][0]
-    if review_file.exists():
-        review_text = review_file.read_text(encoding="utf-8")
-        payload["review_text"] = review_text
-
     idea_file = cache_dir / STAGE_FILE_SPECS["idea"][0]
     if idea_file.exists():
         idea_data = read_json_file(idea_file)
         if not isinstance(idea_data, dict):
             raise ValueError("缓存中的 01_idea.json 不是对象")
         payload["idea_data"] = idea_data
+
+    review_file = cache_dir / STAGE_FILE_SPECS["review"][0]
+    if review_file.exists():
+        review_text = review_file.read_text(encoding="utf-8")
+        payload["review_text"] = review_text
 
     outline_file = cache_dir / STAGE_FILE_SPECS["outline"][0]
     if outline_file.exists():

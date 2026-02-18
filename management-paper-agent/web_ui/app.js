@@ -23,7 +23,7 @@ const paperOutput = document.getElementById("paperOutput");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 const cacheButtons = Array.from(document.querySelectorAll(".cache-btn"));
 
-const stageSequence = ["literature", "review", "idea", "outline", "paper"];
+const stageSequence = ["literature", "idea", "review", "outline", "paper"];
 const stageOutputMap = {
   literature: literatureOutput,
   review: reviewOutput,
@@ -110,6 +110,14 @@ function parseEventData(evt) {
     return JSON.parse(evt.data || "{}");
   } catch (_error) {
     return {};
+  }
+}
+
+function safePrettyJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_error) {
+    return String(value || "");
   }
 }
 
@@ -493,12 +501,12 @@ async function loadHistoryDir(fileList) {
       fileName: "00_literature.json",
       format: prettyJsonText,
     },
+    { stage: "idea", fileName: "01_idea.json", format: prettyJsonText },
     {
       stage: "review",
       fileName: "00_literature_review.md",
       format: (text) => text || "",
     },
-    { stage: "idea", fileName: "01_idea.json", format: prettyJsonText },
     { stage: "outline", fileName: "02_outline.json", format: prettyJsonText },
     { stage: "paper", fileName: "03_thesis.md", format: (text) => text || "" },
   ];
@@ -522,7 +530,7 @@ async function loadHistoryDir(fileList) {
   }
 
   if (loadedCount === 0) {
-    setStatus("未在目录中找到 00_literature/00_literature_review/01/02/03 文件");
+    setStatus("未在目录中找到 00_literature/01_idea/00_literature_review/02/03 文件");
     return;
   }
 
@@ -610,6 +618,16 @@ function handleEvent(name, payload) {
     return;
   }
 
+  if (name === "llm_request") {
+    const stage = payload.stage || "-";
+    const operation = payload.operation || "-";
+    const model = payload.model || "-";
+    const roundSuffix = payload.round ? `，round=${payload.round}` : "";
+    logLine(`LLM 调用入参：stage=${stage}，operation=${operation}，model=${model}${roundSuffix}`);
+    logLine(safePrettyJson(payload));
+    return;
+  }
+
   if (name === "stage_delta") {
     appendStageText(payload.stage, payload.text || "");
     return;
@@ -688,6 +706,7 @@ function bindSource(jobId) {
     "stage_started",
     "stage_round_started",
     "stage_round_completed",
+    "llm_request",
     "stage_delta",
     "stage_restored",
     "stage_completed",

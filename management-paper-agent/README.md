@@ -5,8 +5,8 @@
 
 项目目标是生成中文管理学本科论文初稿，流程分为五步：
 1. 文献检索（`00_literature.json`）
-2. 文献综述（`00_literature_review.md`）
-3. 选题与研究设计生成（`01_idea.json`）
+2. 选题与研究设计生成（`01_idea.json`）
+3. 文献综述（`00_literature_review.md`）
 4. 论文大纲生成（`02_outline.json`）
 5. 论文正文草稿生成（`03_thesis.md`）
 
@@ -79,8 +79,8 @@ python web_app.py --config config.yaml --topic-file examples/topic_example.md --
 - 在线编辑 topic 文本
 - 点击“生成”后按阶段实时查看：
   - `00_literature.json` 文献检索结果
-  - `00_literature_review.md` 文献综述
   - `01_idea.json` 生成过程
+  - `00_literature_review.md` 文献综述
   - `02_outline.json` 生成过程
   - `03_thesis.md` 生成过程
 - 任务完成后查看最终输出目录路径
@@ -102,10 +102,11 @@ python run.py \
 - 文献检索支持 `openalex` / `crossref` / `semantic_scholar` / `arxiv`，默认 `openalex`，可在配置里切换。
 - 文献检索配置已简化为两个字段：`retrieval.provider` 与 `retrieval.max_results`。
 - 文献检索策略：先用题目的中英文两个版本做双路召回，再由一轮 LLM 精排输出最终 `max_results` 条结果。
+- 阶段顺序为 `literature -> idea -> review -> outline -> paper`，其中文献综述会将选题设计结果作为输入之一。
 - 可通过 `workflow.run_until_stage` 控制调试截断阶段：
   - `literature`：仅执行到 `00_literature.json`
-  - `review`：仅执行到 `00_literature_review.md`
   - `idea`：执行到 `01_idea.json`
+  - `review`：执行到 `00_literature_review.md`
   - `outline`：执行到 `02_outline.json`
   - `paper`：完整执行（默认）
 - 该项目默认只生成 Markdown 草稿，不自动导出 Word/PDF。

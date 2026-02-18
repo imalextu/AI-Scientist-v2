@@ -23,10 +23,11 @@ from .utils import (
 IDEA_SYSTEM_PROMPT = """
 你是管理学本科论文导师。你的任务是帮助学生生成“可执行、可完成、符合本科规范”的研究选题设计。
 要求：
-1. 研究问题明确，避免空泛。
-2. 方法可落地（问卷、访谈、案例、二手数据等）。
-3. 给出章节设计与潜在风险。
-4. 按要求输出严格 JSON，不要额外解释。
+1. 先做可研究性评估：可证伪性、变量可操作化、数据可获得性。
+2. 生成 3-5 个候选研究问题（RQ），每个包含理论切入点、预期贡献、难度评级。
+3. 推荐最优 RQ 并说明理由，明确最终研究问题与初步理论锚点。
+4. 方法建议要适配本科阶段可执行条件（问卷、访谈、案例、公开数据等）。
+5. 按要求输出严格 JSON，不要额外解释。
 """.strip()
 
 OUTLINE_SYSTEM_PROMPT = """
@@ -47,11 +48,11 @@ PAPER_SYSTEM_PROMPT = """
 """.strip()
 
 LITERATURE_REVIEW_SYSTEM_PROMPT = """
-你是管理学文献综述写作导师。请基于给定主题、题目与文献证据，产出高质量中文文献综述。
+你是管理学文献综述写作导师。请基于给定主题、题目、选题设计结果与文献证据，产出高质量中文文献综述。
 要求：
 1. 严格围绕输入文献，不得捏造不存在的来源。
 2. 结构化呈现研究问题、机制、变量、方法与结论。
-3. 正文强调比较、综合与批判，不是逐篇摘抄。
+3. 正文需与已确定研究问题和理论锚点保持一致，强调比较、综合与批判，不是逐篇摘抄。
 4. 按模板输出 Markdown，不要输出 JSON。
 """.strip()
 
@@ -81,6 +82,8 @@ RETRIEVAL_RERANK_SYSTEM_PROMPT = """
 3. 返回数量不超过请求的 `top_k`。
 4. 不要输出 JSON 之外的内容。
 """.strip()
+
+LLM_LOG_PROMPT_CHAR_LIMIT = 12000
 
 WorkflowEventHandler = Callable[[str, Dict[str, Any]], None]
 
@@ -117,8 +120,8 @@ class ThesisWorkflow:
     ) -> Path:
         stage_order = {
             "literature": 1,
-            "review": 2,
-            "idea": 3,
+            "idea": 2,
+            "review": 3,
             "outline": 4,
             "paper": 5,
         }
@@ -159,20 +162,29 @@ class ThesisWorkflow:
             topic=topic_text.strip(),
         )
 
+        resolved_title = (forced_title or "").strip()
+        if not resolved_title:
+            topic_lines = [
+                re.sub(r"\s+", " ", line).strip()
+                for line in topic_text.splitlines()
+                if line.strip()
+            ]
+            resolved_title = topic_lines[0] if topic_lines else "未命名题目"
+
         literature_items: list[dict[str, str]] = []
         literature_context = "暂无可用文献线索。"
 
-        review_text = ""
-        review_context = "文献综述阶段尚未执行。"
-        review_usage: Dict[str, int] = {
+        idea_data: Dict[str, Any] = {}
+        idea_raw = ""
+        idea_usage: Dict[str, int] = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
             "rounds": 0,
         }
-        idea_data: Dict[str, Any] = {}
-        idea_raw = ""
-        idea_usage: Dict[str, int] = {
+        review_text = ""
+        review_context = "文献综述阶段尚未执行。"
+        review_usage: Dict[str, int] = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
@@ -219,6 +231,20 @@ class ThesisWorkflow:
             )
             restored_stages.append("literature")
 
+        if stage_order[start_stage] > stage_order["idea"]:
+            cached_idea = cache_payload.get("idea_data")
+            if not isinstance(cached_idea, dict):
+                raise ValueError("恢复运行缺少 01_idea.json 缓存内容。")
+            idea_data = cached_idea
+            write_json(run_dir / "01_idea.json", idea_data)
+            self._emit(
+                "stage_restored",
+                stage="idea",
+                path=str(run_dir / "01_idea.json"),
+                content=json.dumps(idea_data, ensure_ascii=False, indent=2),
+            )
+            restored_stages.append("idea")
+
         if stage_order[start_stage] > stage_order["review"]:
             cached_review = cache_payload.get("review_text")
             if not isinstance(cached_review, str):
@@ -233,20 +259,6 @@ class ThesisWorkflow:
                 content=review_text,
             )
             restored_stages.append("review")
-
-        if stage_order[start_stage] > stage_order["idea"]:
-            cached_idea = cache_payload.get("idea_data")
-            if not isinstance(cached_idea, dict):
-                raise ValueError("恢复运行缺少 01_idea.json 缓存内容。")
-            idea_data = cached_idea
-            write_json(run_dir / "01_idea.json", idea_data)
-            self._emit(
-                "stage_restored",
-                stage="idea",
-                path=str(run_dir / "01_idea.json"),
-                content=json.dumps(idea_data, ensure_ascii=False, indent=2),
-            )
-            restored_stages.append("idea")
 
         if stage_order[start_stage] > stage_order["outline"]:
             cached_outline = cache_payload.get("outline_data")
@@ -280,20 +292,33 @@ class ThesisWorkflow:
             )
             executed_stages.append("literature")
 
+        if _should_execute("idea"):
+            self._ensure_not_cancelled()
+            self._emit("stage_started", stage="idea")
+            idea_data, idea_raw, idea_usage = self._run_idea_stage(
+                topic_text=topic_text,
+                literature_context=literature_context,
+                paper_title=resolved_title,
+                forced_title=forced_title,
+            )
+            write_json(run_dir / "01_idea.json", idea_data)
+            self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="idea",
+                path=str(run_dir / "01_idea.json"),
+                content=json.dumps(idea_data, ensure_ascii=False, indent=2),
+                usage=idea_usage,
+            )
+            executed_stages.append("idea")
+
         if _should_execute("review"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="review")
-            review_title = (forced_title or "").strip()
-            if not review_title:
-                topic_lines = [
-                    re.sub(r"\s+", " ", line).strip()
-                    for line in topic_text.splitlines()
-                    if line.strip()
-                ]
-                review_title = topic_lines[0] if topic_lines else "未命名题目"
             review_text, review_usage = self._run_literature_review_stage(
                 topic_text=topic_text,
-                paper_title=review_title,
+                paper_title=resolved_title,
+                idea_data=idea_data,
                 literature_items=literature_items,
                 literature_context=literature_context,
             )
@@ -308,26 +333,6 @@ class ThesisWorkflow:
                 usage=review_usage,
             )
             executed_stages.append("review")
-
-        if _should_execute("idea"):
-            self._ensure_not_cancelled()
-            self._emit("stage_started", stage="idea")
-            idea_data, idea_raw, idea_usage = self._run_idea_stage(
-                topic_text=topic_text,
-                literature_context=literature_context,
-                review_context=review_context,
-                forced_title=forced_title,
-            )
-            write_json(run_dir / "01_idea.json", idea_data)
-            self._ensure_not_cancelled()
-            self._emit(
-                "stage_completed",
-                stage="idea",
-                path=str(run_dir / "01_idea.json"),
-                content=json.dumps(idea_data, ensure_ascii=False, indent=2),
-                usage=idea_usage,
-            )
-            executed_stages.append("idea")
 
         if _should_execute("outline"):
             self._ensure_not_cancelled()
@@ -437,6 +442,14 @@ class ThesisWorkflow:
             f"题目：{topic_text.strip()}\n\n"
             "请按要求返回 JSON。"
         )
+        self._emit_llm_request(
+            stage="literature",
+            operation="query_rewrite",
+            system_prompt=RETRIEVAL_QUERY_REWRITE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=0.1,
+            max_tokens=500,
+        )
         try:
             response_text, _, _ = self.client.complete_with_meta(
                 system_prompt=RETRIEVAL_QUERY_REWRITE_SYSTEM_PROMPT,
@@ -529,6 +542,14 @@ class ThesisWorkflow:
             "请只返回 JSON。"
         )
 
+        self._emit_llm_request(
+            stage="literature",
+            operation="rerank",
+            system_prompt=RETRIEVAL_RERANK_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=0.1,
+            max_tokens=800,
+        )
         try:
             response_text, _, _ = self.client.complete_with_meta(
                 system_prompt=RETRIEVAL_RERANK_SYSTEM_PROMPT,
@@ -579,6 +600,7 @@ class ThesisWorkflow:
         *,
         topic_text: str,
         paper_title: str,
+        idea_data: Dict[str, Any],
         literature_items: list[dict[str, str]],
         literature_context: str,
     ) -> Tuple[str, Dict[str, int]]:
@@ -592,6 +614,11 @@ class ThesisWorkflow:
                 "paper_title": paper_title,
                 "target_references": target_refs,
                 "literature_context": literature_context,
+                "idea_json": json.dumps(
+                    idea_data,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
                 "literature_json": json.dumps(
                     literature_items,
                     ensure_ascii=False,
@@ -631,6 +658,18 @@ class ThesisWorkflow:
                     )
                     start += chunk_size
 
+            self._emit_llm_request(
+                stage="review",
+                operation="literature_review",
+                system_prompt=LITERATURE_REVIEW_SYSTEM_PROMPT,
+                user_prompt=current_prompt,
+                temperature=self.config.workflow.temperature,
+                max_tokens=max(
+                    self.config.workflow.review_max_tokens,
+                    self.config.llm.max_tokens,
+                ),
+                round_idx=current_round,
+            )
             raw_text, usage, finish_reason = self._client_complete_with_meta(
                 system_prompt=LITERATURE_REVIEW_SYSTEM_PROMPT,
                 user_prompt=current_prompt,
@@ -674,7 +713,7 @@ class ThesisWorkflow:
         *,
         topic_text: str,
         literature_context: str,
-        review_context: str,
+        paper_title: str,
         forced_title: str | None,
     ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
         prompt_template = read_text(self.project_root / self.config.workflow.idea_prompt)
@@ -682,6 +721,7 @@ class ThesisWorkflow:
             prompt_template,
             {
                 "topic": topic_text,
+                "paper_title": paper_title,
                 "domain": self.config.paper.domain,
                 "audience": self.config.paper.audience,
                 "language": self.config.paper.language,
@@ -689,8 +729,16 @@ class ThesisWorkflow:
                 "max_words": self.config.paper.max_words,
                 "citation_style": self.config.paper.citation_style,
                 "literature_context": literature_context,
-                "review_context": review_context,
             },
+        )
+        self._emit_llm_request(
+            stage="idea",
+            operation="idea_generation",
+            system_prompt=IDEA_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.config.workflow.temperature,
+            max_tokens=max(self.config.llm.max_tokens // 2, 1800),
+            round_idx=1,
         )
         raw_text, usage = self._client_complete(
             system_prompt=IDEA_SYSTEM_PROMPT,
@@ -1086,6 +1134,39 @@ class ThesisWorkflow:
             round=round_idx,
             text=text,
         )
+
+    def _emit_llm_request(
+        self,
+        *,
+        stage: str,
+        operation: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None,
+        max_tokens: int | None,
+        round_idx: int | None = None,
+    ) -> None:
+        self._emit(
+            "llm_request",
+            stage=stage,
+            operation=operation,
+            round=round_idx,
+            model=self.config.llm.model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            prompt_char_limit=LLM_LOG_PROMPT_CHAR_LIMIT,
+            system_prompt_char_count=len(system_prompt),
+            user_prompt_char_count=len(user_prompt),
+            system_prompt=self._clip_for_log(system_prompt),
+            user_prompt=self._clip_for_log(user_prompt),
+            system_prompt_truncated=len(system_prompt) > LLM_LOG_PROMPT_CHAR_LIMIT,
+            user_prompt_truncated=len(user_prompt) > LLM_LOG_PROMPT_CHAR_LIMIT,
+        )
+
+    def _clip_for_log(self, text: str, max_chars: int = LLM_LOG_PROMPT_CHAR_LIMIT) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars]
 
     def _is_cancelled(self) -> bool:
         if not self.cancel_checker:

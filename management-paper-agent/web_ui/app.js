@@ -14,31 +14,34 @@ const statusLine = document.getElementById("statusLine");
 const pathLine = document.getElementById("pathLine");
 const logOutput = document.getElementById("logOutput");
 const literatureOutput = document.getElementById("literatureOutput");
-const researchOutput = document.getElementById("researchOutput");
+const reviewOutput =
+  document.getElementById("reviewOutput") ||
+  document.getElementById("researchOutput");
 const ideaOutput = document.getElementById("ideaOutput");
 const outlineOutput = document.getElementById("outlineOutput");
 const paperOutput = document.getElementById("paperOutput");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 const cacheButtons = Array.from(document.querySelectorAll(".cache-btn"));
 
-const stageSequence = ["literature", "research", "idea", "outline", "paper"];
+const stageSequence = ["literature", "review", "idea", "outline", "paper"];
 const stageOutputMap = {
   literature: literatureOutput,
-  research: researchOutput,
+  review: reviewOutput,
   idea: ideaOutput,
   outline: outlineOutput,
   paper: paperOutput,
 };
 const stageLabelMap = {
   literature: "00 文献检索 JSON",
-  research: "00 研究树搜索 JSON",
+  review: "00 文献综述 Markdown",
   idea: "01 选题设计 JSON",
   outline: "02 论文大纲 JSON",
   paper: "03 论文正文 Markdown",
 };
 const copyTargetLabelMap = {
   literatureOutput: stageLabelMap.literature,
-  researchOutput: stageLabelMap.research,
+  reviewOutput: stageLabelMap.review,
+  researchOutput: stageLabelMap.review,
   ideaOutput: stageLabelMap.idea,
   outlineOutput: stageLabelMap.outline,
   paperOutput: stageLabelMap.paper,
@@ -126,7 +129,7 @@ function inferRunDirFromFilePath(filePath) {
 
 function normalizeStage(stage) {
   const value = String(stage || "").trim().toLowerCase();
-  if (stageOutputMap[value]) {
+  if (Object.prototype.hasOwnProperty.call(stageOutputMap, value)) {
     return value;
   }
   return "";
@@ -139,9 +142,6 @@ function resolveStageTarget(stage) {
   const normalized = normalizeStage(stage);
   if (normalized) {
     return stageOutputMap[normalized];
-  }
-  if (String(stage).startsWith("research:")) {
-    return researchOutput;
   }
   return null;
 }
@@ -269,7 +269,7 @@ function prettyJsonText(text) {
 function outputSnapshot() {
   return {
     literature: literatureOutput.textContent || "",
-    research: researchOutput.textContent || "",
+    review: reviewOutput.textContent || "",
     idea: ideaOutput.textContent || "",
     outline: outlineOutput.textContent || "",
     paper: paperOutput.textContent || "",
@@ -494,9 +494,9 @@ async function loadHistoryDir(fileList) {
       format: prettyJsonText,
     },
     {
-      stage: "research",
-      fileName: "00_research_tree.json",
-      format: prettyJsonText,
+      stage: "review",
+      fileName: "00_literature_review.md",
+      format: (text) => text || "",
     },
     { stage: "idea", fileName: "01_idea.json", format: prettyJsonText },
     { stage: "outline", fileName: "02_outline.json", format: prettyJsonText },
@@ -522,7 +522,7 @@ async function loadHistoryDir(fileList) {
   }
 
   if (loadedCount === 0) {
-    setStatus("未在目录中找到 00_literature/00_research_tree/01/02/03 文件");
+    setStatus("未在目录中找到 00_literature/00_literature_review/01/02/03 文件");
     return;
   }
 

@@ -6,8 +6,8 @@
 ## 选题设计 JSON
 {idea_json}
 
-## 研究树搜索结论
-{research_context}
+## 文献综述结论
+{review_context}
 
 ## 参考文献线索
 {literature_context}

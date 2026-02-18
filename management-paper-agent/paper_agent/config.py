@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
 from typing import Any, Dict
 
 import yaml
@@ -66,30 +65,15 @@ class RetrievalConfig:
 class WorkflowConfig:
     temperature: float = 0.3
     max_section_tokens: int = 2000
+    review_prompt: str = "prompts/literature_review.md"
+    review_max_tokens: int = 6500
     idea_prompt: str = "prompts/idea_generation.md"
     outline_prompt: str = "prompts/outline.md"
     paper_prompt: str = "prompts/paper_writer.md"
     outline_max_rounds: int = 4
     paper_max_rounds: int = 6
     continuation_tail_chars: int = 12000
-    research_enabled: bool = True
-    research_prompt: str = "prompts/research_iteration.md"
-    research_eval_prompt: str = "prompts/research_evaluator.md"
-    research_max_tokens: int = 2200
-    research_stages: list["ResearchStageConfig"] = field(
-        default_factory=lambda: _default_research_stages()
-    )
     run_until_stage: str = "paper"
-
-
-@dataclass
-class ResearchStageConfig:
-    key: str
-    name: str
-    goal: str
-    max_iterations: int = 2
-    branching_factor: int = 2
-    keep_top_k: int = 2
 
 
 @dataclass
@@ -107,82 +91,9 @@ class AppConfig:
     project_root: Path = Path(".")
 
 
-def _default_research_stages() -> list[ResearchStageConfig]:
-    return [
-        ResearchStageConfig(
-            key="problem_framing",
-            name="问题界定",
-            goal=(
-                "明确研究问题、研究对象、边界条件与核心变量，确保题目可落地且适合本科论文。"
-            ),
-            max_iterations=2,
-            branching_factor=2,
-            keep_top_k=2,
-        ),
-        ResearchStageConfig(
-            key="method_design",
-            name="方法设计",
-            goal=(
-                "形成可执行的方法路线，明确样本与数据来源，保证在本科条件下可实施。"
-            ),
-            max_iterations=2,
-            branching_factor=2,
-            keep_top_k=2,
-        ),
-        ResearchStageConfig(
-            key="analysis_and_risk",
-            name="分析与风险",
-            goal=(
-                "完善分析步骤、预期发现与潜在风险控制，形成可直接用于写作的研究方案。"
-            ),
-            max_iterations=2,
-            branching_factor=2,
-            keep_top_k=2,
-        ),
-    ]
-
-
-def _sanitize_stage_key(raw_key: str, fallback_idx: int) -> str:
-    key = re.sub(r"[^a-z0-9_]+", "_", raw_key.strip().lower()).strip("_")
-    if key:
-        return key
-    return f"stage_{fallback_idx}"
-
-
-def _parse_research_stages(raw_stages: Any) -> list[ResearchStageConfig]:
-    if not isinstance(raw_stages, list) or not raw_stages:
-        return _default_research_stages()
-
-    parsed: list[ResearchStageConfig] = []
-    for idx, item in enumerate(raw_stages, start=1):
-        if not isinstance(item, dict):
-            continue
-        key_raw = str(item.get("key") or item.get("name") or f"stage_{idx}")
-        key = _sanitize_stage_key(key_raw, idx)
-        name = str(item.get("name") or key)
-        goal = str(item.get("goal") or item.get("goals") or "").strip()
-        if not goal:
-            goal = f"完成{name}相关研究阶段。"
-
-        parsed.append(
-            ResearchStageConfig(
-                key=key,
-                name=name,
-                goal=goal,
-                max_iterations=max(1, _as_int(item.get("max_iterations"), 2)),
-                branching_factor=max(1, _as_int(item.get("branching_factor"), 2)),
-                keep_top_k=max(1, _as_int(item.get("keep_top_k"), 2)),
-            )
-        )
-
-    if not parsed:
-        return _default_research_stages()
-    return parsed
-
-
 def _normalize_run_until_stage(raw_value: Any) -> str:
     stage = str(raw_value or "paper").strip().lower()
-    if stage not in {"literature", "research", "idea", "outline", "paper"}:
+    if stage not in {"literature", "review", "idea", "outline", "paper"}:
         return "paper"
     return stage
 
@@ -255,10 +166,14 @@ def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
         retrieval_cfg.provider = "openalex"
 
     workflow_raw = raw.get("workflow", {})
-    research_stages = _parse_research_stages(workflow_raw.get("research_stages"))
     workflow_cfg = WorkflowConfig(
         temperature=_as_float(workflow_raw.get("temperature"), 0.3),
         max_section_tokens=_as_int(workflow_raw.get("max_section_tokens"), 2000),
+        review_prompt=str(workflow_raw.get("review_prompt", "prompts/literature_review.md")),
+        review_max_tokens=max(
+            1800,
+            _as_int(workflow_raw.get("review_max_tokens"), 6500),
+        ),
         idea_prompt=str(workflow_raw.get("idea_prompt", "prompts/idea_generation.md")),
         outline_prompt=str(workflow_raw.get("outline_prompt", "prompts/outline.md")),
         paper_prompt=str(workflow_raw.get("paper_prompt", "prompts/paper_writer.md")),
@@ -267,17 +182,6 @@ def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
         continuation_tail_chars=_as_int(
             workflow_raw.get("continuation_tail_chars"), 12000
         ),
-        research_enabled=_as_bool(workflow_raw.get("research_enabled"), True),
-        research_prompt=str(
-            workflow_raw.get("research_prompt", "prompts/research_iteration.md")
-        ),
-        research_eval_prompt=str(
-            workflow_raw.get("research_eval_prompt", "prompts/research_evaluator.md")
-        ),
-        research_max_tokens=max(
-            1200, _as_int(workflow_raw.get("research_max_tokens"), 2200)
-        ),
-        research_stages=research_stages,
         run_until_stage=_normalize_run_until_stage(
             workflow_raw.get("run_until_stage", "paper")
         ),

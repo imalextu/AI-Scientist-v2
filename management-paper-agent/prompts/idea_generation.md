@@ -6,8 +6,8 @@
 - 受众：{audience}
 - 写作语言：{language}
 - 目标字数：{min_words} - {max_words}
-- 研究树搜索结论：
-{research_context}
+- 文献综述结论：
+{review_context}
 - 参考文献线索：
 {literature_context}
 
@@ -24,8 +24,8 @@
 {
   "thesis_title_cn": "中文题目",
   "thesis_title_en": "English Title",
-  "research_problem": "核心研究问题",
-  "research_objectives": [
+  "problem_statement": "核心研究问题",
+  "study_objectives": [
     "目标1",
     "目标2",
     "目标3"

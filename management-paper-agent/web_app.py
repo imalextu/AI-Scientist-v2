@@ -31,11 +31,11 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 RUNNING_JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 
-STAGE_SEQUENCE = ["literature", "research", "idea", "outline", "paper"]
+STAGE_SEQUENCE = ["literature", "review", "idea", "outline", "paper"]
 STAGE_ORDER = {name: idx + 1 for idx, name in enumerate(STAGE_SEQUENCE)}
 STAGE_FILE_SPECS: Dict[str, tuple[str, str]] = {
     "literature": ("00_literature.json", "json"),
-    "research": ("00_research_tree.json", "json"),
+    "review": ("00_literature_review.md", "text"),
     "idea": ("01_idea.json", "json"),
     "outline": ("02_outline.json", "json"),
     "paper": ("03_thesis.md", "text"),
@@ -127,12 +127,10 @@ def build_resume_cache_payload(cache_id: str) -> Dict[str, Any]:
             raise ValueError("缓存中的 00_literature.json 不是数组")
         payload["literature_items"] = literature_data
 
-    research_file = cache_dir / STAGE_FILE_SPECS["research"][0]
-    if research_file.exists():
-        research_data = read_json_file(research_file)
-        if not isinstance(research_data, dict):
-            raise ValueError("缓存中的 00_research_tree.json 不是对象")
-        payload["research_data"] = research_data
+    review_file = cache_dir / STAGE_FILE_SPECS["review"][0]
+    if review_file.exists():
+        review_text = review_file.read_text(encoding="utf-8")
+        payload["review_text"] = review_text
 
     idea_file = cache_dir / STAGE_FILE_SPECS["idea"][0]
     if idea_file.exists():
@@ -255,8 +253,6 @@ def save_cache() -> Response:
     for stage_name in required_stages:
         raw_text = str(outputs.get(stage_name, "")).strip()
         if not raw_text:
-            if stage_name == "research" and stage != "research":
-                continue
             return jsonify({"error": f"{stage_name} 阶段内容为空，无法缓存"}), 400
 
         file_name, content_type = STAGE_FILE_SPECS[stage_name]
@@ -472,7 +468,7 @@ def stream_job(job_id: str) -> Response:
 
     def event_stream() -> Any:
         updates: queue.Queue[tuple[str, Dict[str, Any]] | None] = queue.Queue(
-            maxsize=512
+            maxsize=2048
         )
         stream_closed = threading.Event()
 
@@ -482,8 +478,6 @@ def stream_job(job_id: str) -> Response:
             try:
                 updates.put_nowait((event, payload))
             except queue.Full:
-                if event == "stage_delta":
-                    return
                 try:
                     updates.get_nowait()
                 except queue.Empty:

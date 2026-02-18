@@ -5,7 +5,7 @@
 
 项目目标是生成中文管理学本科论文初稿，流程分为五步：
 1. 文献检索（`00_literature.json`）
-2. 研究树搜索（`00_research_tree.json`）
+2. 文献综述（`00_literature_review.md`）
 3. 选题与研究设计生成（`01_idea.json`）
 4. 论文大纲生成（`02_outline.json`）
 5. 论文正文草稿生成（`03_thesis.md`）
@@ -25,10 +25,9 @@ management-paper-agent/
 │   └── workflow.py
 ├── prompts/
 │   ├── idea_generation.md
+│   ├── literature_review.md
 │   ├── outline.md
-│   ├── paper_writer.md
-│   ├── research_iteration.md
-│   └── research_evaluator.md
+│   └── paper_writer.md
 ├── requirements.txt
 └── run.py
 ```
@@ -80,7 +79,7 @@ python web_app.py --config config.yaml --topic-file examples/topic_example.md --
 - 在线编辑 topic 文本
 - 点击“生成”后按阶段实时查看：
   - `00_literature.json` 文献检索结果
-  - `00_research_tree.json` 研究树搜索过程与最优路径
+  - `00_literature_review.md` 文献综述
   - `01_idea.json` 生成过程
   - `02_outline.json` 生成过程
   - `03_thesis.md` 生成过程
@@ -103,10 +102,9 @@ python run.py \
 - 文献检索支持 `openalex` / `crossref` / `semantic_scholar` / `arxiv`，默认 `openalex`，可在配置里切换。
 - 文献检索配置已简化为两个字段：`retrieval.provider` 与 `retrieval.max_results`。
 - 文献检索策略：先用题目的中英文两个版本做双路召回，再由一轮 LLM 精排输出最终 `max_results` 条结果。
-- 可通过 `workflow.research_enabled: false` 关闭研究树搜索，仅保留 `literature -> idea -> outline -> paper`。
 - 可通过 `workflow.run_until_stage` 控制调试截断阶段：
   - `literature`：仅执行到 `00_literature.json`
-  - `research`：仅执行到 `00_research_tree.json`
+  - `review`：仅执行到 `00_literature_review.md`
   - `idea`：执行到 `01_idea.json`
   - `outline`：执行到 `02_outline.json`
   - `paper`：完整执行（默认）

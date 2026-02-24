@@ -61,7 +61,7 @@ class LiteratureRetriever:
         return [self._to_public_item(item) for item in deduped[:pool_size]]
 
     def _build_query_variants(self, topic: str) -> List[str]:
-        variants: List[str] = [topic]
+        expanded_variants: List[str] = []
         if self.query_expander:
             try:
                 expanded = self.query_expander(topic)
@@ -70,11 +70,11 @@ class LiteratureRetriever:
             for query in expanded:
                 text = self._collapse_whitespace(str(query or ""))
                 if text:
-                    variants.append(text)
+                    expanded_variants.append(text)
 
         deduped: List[str] = []
         seen: set[str] = set()
-        for query in variants:
+        for query in expanded_variants:
             cleaned = self._collapse_whitespace(query)
             if not cleaned:
                 continue
@@ -83,10 +83,15 @@ class LiteratureRetriever:
                 continue
             seen.add(key)
             deduped.append(cleaned)
-            if len(deduped) >= 2:
-                break
 
-        return deduped if deduped else [topic]
+        fallback_topic = self._collapse_whitespace(topic)
+        if not deduped and fallback_topic:
+            return [fallback_topic]
+
+        if fallback_topic and fallback_topic.lower() not in seen and len(deduped) < 2:
+            deduped.append(fallback_topic)
+
+        return deduped[:2] if deduped else [fallback_topic or topic]
 
     def _collect_candidates(
         self,

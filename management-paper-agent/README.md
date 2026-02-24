@@ -5,7 +5,7 @@
 
 项目目标是生成中文管理学本科论文初稿，流程分为五步：
 1. 文献检索（`00_literature.json`）
-2. 选题与研究设计生成（`01_idea.json`）
+2. 选题与研究设计生成（`01_idea.json`，包含“论文类型判定”）
 3. 文献综述（`00_literature_review.md`）
 4. 论文大纲生成（`02_outline.json`）
 5. 论文正文草稿生成（`03_thesis.md`）
@@ -99,10 +99,12 @@ python run.py \
 
 ## 说明
 
-- 文献检索支持 `openalex` / `crossref` / `semantic_scholar` / `arxiv`，默认 `openalex`，可在配置里切换。
+- 文献检索（学术）支持 `openalex` / `crossref` / `semantic_scholar` / `arxiv`，默认 `openalex`，可在配置里切换。
 - 文献检索配置已简化为两个字段：`retrieval.provider` 与 `retrieval.max_results`。
+- Web 检索（独立工具）使用 `web_search` 配置段，当前支持 `bocha`，可配置 `enabled`/`max_results`/`api_key_env`/`api_key`/`base_url`/`freshness`/`summary`。
 - 文献检索策略：先用题目的中英文两个版本做双路召回，再由一轮 LLM 精排输出最终 `max_results` 条结果。
-- 阶段顺序为 `literature -> idea -> review -> outline -> paper`，其中文献综述会将选题设计结果作为输入之一。
+- 阶段顺序为 `literature -> idea -> review -> outline -> paper`；其中 `idea` 阶段会先做“论文类型判定”（定量实证型 / 案例研究型 / 对策建议型），并驱动后续 `review -> outline -> paper` 的分支化内容生成。
+- 当论文类型为 `对策建议型` 时，会在 `outline` 前追加三步增强链路：`企业/行业信息采集（Bocha Web Search） -> 现状-问题-原因三层分析 -> 对策体系设计`，并将结果注入大纲与正文生成输入。
 - 可通过 `workflow.run_until_stage` 控制调试截断阶段：
   - `literature`：仅执行到 `00_literature.json`
   - `idea`：执行到 `01_idea.json`

@@ -19,6 +19,16 @@ retrieval:
   provider: "openalex" # options: openalex, crossref, semantic_scholar, arxiv
   max_results: 8
 
+web_search:
+  enabled: false
+  provider: "bocha"
+  max_results: 10
+  api_key_env: "BOCHA_API_KEY"
+  api_key: ""
+  base_url: "https://api.bochaai.com/v1/web-search"
+  freshness: "noLimit" # options: oneDay, oneWeek, oneMonth, oneYear, noLimit
+  summary: true
+
 workflow:
   temperature: 0.3
   max_section_tokens: 2000

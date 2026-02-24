@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Tuple
 from .config import AppConfig
 from .llm_client import LLMClient, RequestCancelledError
 from .retrieval import LiteratureRetriever, format_literature_context
+from .web_search import WebSearchClient, format_web_search_context
 from .utils import (
     ensure_dir,
     extract_json_payload,
@@ -26,8 +27,10 @@ IDEA_SYSTEM_PROMPT = """
 1. 先做可研究性评估：可证伪性、变量可操作化、数据可获得性。
 2. 生成 3-5 个候选研究问题（RQ），每个包含理论切入点、预期贡献、难度评级。
 3. 推荐最优 RQ 并说明理由，明确最终研究问题与初步理论锚点。
-4. 方法建议要适配本科阶段可执行条件（问卷、访谈、案例、公开数据等）。
-5. 按要求输出严格 JSON，不要额外解释。
+4. 必须输出“论文类型判定”字段，并在 `定量实证型` / `案例研究型` / `对策建议型` 三选一。
+5. 论文类型判定依据必须覆盖：题目特征、数据条件、学生偏好；信息不足时默认 `对策建议型`。
+6. 方法建议要适配本科阶段可执行条件（问卷、访谈、案例、公开数据等），并与论文类型一致。
+7. 按要求输出严格 JSON，不要额外解释。
 """.strip()
 
 OUTLINE_SYSTEM_PROMPT = """
@@ -83,7 +86,45 @@ RETRIEVAL_RERANK_SYSTEM_PROMPT = """
 4. 不要输出 JSON 之外的内容。
 """.strip()
 
+POLICY_DIAGNOSIS_SYSTEM_PROMPT = """
+你是管理学本科论文问题诊断助手。请基于输入信息生成“现状-问题-原因”三层分析。
+输出必须是严格 JSON，不要输出解释。
+要求：
+1. 仅依据给定输入推断，不得编造可验证事实。
+2. 每个问题需对应至少一个原因，并给出证据线索来源。
+3. 分析粒度保持本科论文可执行深度。
+""".strip()
+
+POLICY_STRATEGY_SYSTEM_PROMPT = """
+你是管理学本科论文对策设计助手。请基于三层分析结果设计可执行的对策体系。
+输出必须是严格 JSON，不要输出解释。
+要求：
+1. 对策需与问题-原因逐项对齐。
+2. 给出实施路径、优先级、资源与风险控制。
+3. 避免空泛口号，保证本科写作可展开。
+""".strip()
+
 LLM_LOG_PROMPT_CHAR_LIMIT = 12000
+IDEA_PAPER_TYPE_FIELD = "论文类型判定"
+DEFAULT_PAPER_TYPE = "对策建议型"
+PAPER_TYPE_BRANCH_PATHS = {
+    "定量实证型": ["理论框架+假设", "研究设计(问卷)", "数据分析"],
+    "案例研究型": ["分析框架构建", "案例数据收集", "案例分析"],
+    "对策建议型": ["轻量理论+现状调研", "问题诊断", "对策设计"],
+}
+PAPER_TYPE_ALIASES = {
+    "定量": "定量实证型",
+    "实证": "定量实证型",
+    "quantitative": "定量实证型",
+    "empirical": "定量实证型",
+    "案例": "案例研究型",
+    "case": "案例研究型",
+    "case study": "案例研究型",
+    "对策": "对策建议型",
+    "建议": "对策建议型",
+    "policy": "对策建议型",
+    "strategy": "对策建议型",
+}
 
 WorkflowEventHandler = Callable[[str, Dict[str, Any]], None]
 
@@ -107,6 +148,7 @@ class ThesisWorkflow:
             config.retrieval,
             query_expander=self._expand_literature_queries_with_llm,
         )
+        self.web_search = WebSearchClient(config.web_search)
         self.event_handler = event_handler
         self.cancel_checker = cancel_checker
 
@@ -190,6 +232,14 @@ class ThesisWorkflow:
             "total_tokens": 0,
             "rounds": 0,
         }
+        policy_support_data: Dict[str, Any] = {}
+        policy_support_context = "对策建议型增强输入未启用。"
+        policy_support_usage: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
         outline_data: Dict[str, Any] = {}
         outline_raw = ""
         outline_usage: Dict[str, int] = {
@@ -235,7 +285,7 @@ class ThesisWorkflow:
             cached_idea = cache_payload.get("idea_data")
             if not isinstance(cached_idea, dict):
                 raise ValueError("恢复运行缺少 01_idea.json 缓存内容。")
-            idea_data = cached_idea
+            idea_data = self._normalize_idea_paper_type(cached_idea)
             write_json(run_dir / "01_idea.json", idea_data)
             self._emit(
                 "stage_restored",
@@ -265,6 +315,13 @@ class ThesisWorkflow:
             if not isinstance(cached_outline, dict):
                 raise ValueError("恢复运行缺少 02_outline.json 缓存内容。")
             outline_data = cached_outline
+            if self._is_policy_paper(idea_data):
+                policy_raw = outline_data.get("policy_support")
+                if isinstance(policy_raw, dict):
+                    policy_support_data = policy_raw
+                    policy_support_context = self._format_policy_support_context(
+                        policy_support_data
+                    )
             write_json(run_dir / "02_outline.json", outline_data)
             self._emit(
                 "stage_restored",
@@ -334,6 +391,40 @@ class ThesisWorkflow:
             )
             executed_stages.append("review")
 
+        needs_policy_support = self._is_policy_paper(idea_data) and (
+            _should_execute("outline") or _should_execute("paper")
+        )
+        if needs_policy_support and not policy_support_data:
+            self._ensure_not_cancelled()
+            self._emit("stage_started", stage="policy_support")
+            policy_support_data, policy_support_usage = self._run_policy_support_stage(
+                topic_text=topic_text,
+                idea_data=idea_data,
+                literature_context=literature_context,
+                review_context=review_context,
+            )
+            policy_support_context = self._format_policy_support_context(
+                policy_support_data
+            )
+            write_json(run_dir / "02a_policy_support.json", policy_support_data)
+            self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="policy_support",
+                path=str(run_dir / "02a_policy_support.json"),
+                content=json.dumps(policy_support_data, ensure_ascii=False, indent=2),
+                usage=policy_support_usage,
+            )
+            executed_stages.append("policy_support")
+        elif policy_support_data:
+            policy_support_context = self._format_policy_support_context(
+                policy_support_data
+            )
+        if self._is_policy_paper(idea_data) and policy_support_data and isinstance(
+            outline_data, dict
+        ):
+            outline_data["policy_support"] = policy_support_data
+
         if _should_execute("outline"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="outline")
@@ -342,6 +433,8 @@ class ThesisWorkflow:
                 literature_context=literature_context,
                 review_context=review_context,
                 idea_data=idea_data,
+                policy_support_data=policy_support_data,
+                policy_support_context=policy_support_context,
             )
             write_json(run_dir / "02_outline.json", outline_data)
             self._ensure_not_cancelled()
@@ -363,6 +456,8 @@ class ThesisWorkflow:
                 review_context=review_context,
                 idea_data=idea_data,
                 outline_data=outline_data,
+                policy_support_data=policy_support_data,
+                policy_support_context=policy_support_context,
             )
             write_text(run_dir / "03_thesis.md", thesis_md)
             self._ensure_not_cancelled()
@@ -401,8 +496,10 @@ class ThesisWorkflow:
                 "review": review_usage,
                 "idea": idea_usage,
                 "outline": outline_usage,
+                "policy_support": policy_support_usage,
                 "paper": paper_usage,
             },
+            policy_support_data=policy_support_data,
         )
         write_json(run_dir / "run_metadata.json", metadata)
         self._emit("metadata_saved", path=str(run_dir / "run_metadata.json"))
@@ -434,6 +531,269 @@ class ThesisWorkflow:
         items = self._rerank_literature_with_llm(topic_text, candidates)
         self._ensure_not_cancelled()
         return items, format_literature_context(items)
+
+    def _run_policy_support_stage(
+        self,
+        *,
+        topic_text: str,
+        idea_data: Dict[str, Any],
+        literature_context: str,
+        review_context: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, int]]:
+        usage_total = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        web_items, web_context, web_queries = self._collect_policy_web_research(
+            topic_text=topic_text,
+            idea_data=idea_data,
+        )
+        analysis_data, analysis_usage = self._run_policy_three_layer_analysis(
+            topic_text=topic_text,
+            idea_data=idea_data,
+            literature_context=literature_context,
+            review_context=review_context,
+            web_context=web_context,
+        )
+        strategy_data, strategy_usage = self._run_policy_countermeasure_design(
+            topic_text=topic_text,
+            idea_data=idea_data,
+            three_layer_analysis=analysis_data,
+            web_context=web_context,
+        )
+        self._accumulate_usage(usage_total, analysis_usage)
+        self._accumulate_usage(usage_total, strategy_usage)
+        usage_total["rounds"] = 2
+        return (
+            {
+                "pipeline_steps": [
+                    "企业/行业信息采集",
+                    "现状-问题-原因三层分析",
+                    "对策体系设计",
+                ],
+                "web_research": {
+                    "queries": web_queries,
+                    "items": web_items,
+                    "context": web_context,
+                },
+                "three_layer_analysis": analysis_data,
+                "countermeasure_system": strategy_data,
+            },
+            usage_total,
+        )
+
+    def _collect_policy_web_research(
+        self,
+        *,
+        topic_text: str,
+        idea_data: Dict[str, Any],
+    ) -> Tuple[list[dict[str, str]], str, list[str]]:
+        queries = self._build_policy_web_queries(topic_text=topic_text, idea_data=idea_data)
+        self._emit(
+            "web_search_started",
+            enabled=self.config.web_search.enabled,
+            provider=self.config.web_search.provider,
+            query_count=len(queries),
+            queries=queries,
+        )
+
+        raw_items: list[dict[str, str]] = []
+        for query in queries:
+            self._ensure_not_cancelled()
+            raw_items.extend(self.web_search.search(query))
+
+        deduped_items = self._dedupe_web_items(raw_items)
+        if self.config.web_search.max_results > 0:
+            deduped_items = deduped_items[: self.config.web_search.max_results]
+
+        context = format_web_search_context(deduped_items)
+        if queries:
+            query_line = " | ".join(queries)
+            context = f"检索词：{query_line}\n\n{context}"
+
+        self._emit(
+            "web_search_completed",
+            enabled=self.config.web_search.enabled,
+            provider=self.config.web_search.provider,
+            count=len(deduped_items),
+            queries=queries,
+            items=deduped_items,
+        )
+        return deduped_items, context, queries
+
+    def _build_policy_web_queries(
+        self,
+        *,
+        topic_text: str,
+        idea_data: Dict[str, Any],
+    ) -> list[str]:
+        title = self._get_title(idea_data)
+        final_question = str(idea_data.get("final_research_question") or "").strip()
+        candidates = [
+            f"{title} 企业 行业 现状 问题" if title else "",
+            f"{final_question} 现状 原因 对策" if final_question else "",
+            re.sub(r"\s+", " ", topic_text).strip(),
+        ]
+        queries: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            text = re.sub(r"\s+", " ", str(candidate or "").strip())
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            queries.append(text)
+            if len(queries) >= 3:
+                break
+        return queries
+
+    def _dedupe_web_items(self, items: list[dict[str, str]]) -> list[dict[str, str]]:
+        deduped: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip().lower()
+            title = re.sub(r"\W+", "", str(item.get("title") or "").strip().lower())
+            key = f"url:{url}" if url else f"title:{title}"
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
+
+    def _run_policy_three_layer_analysis(
+        self,
+        *,
+        topic_text: str,
+        idea_data: Dict[str, Any],
+        literature_context: str,
+        review_context: str,
+        web_context: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, int]]:
+        user_prompt = (
+            "请基于输入材料完成“现状-问题-原因”三层分析，并输出 JSON。\n\n"
+            f"主题：{topic_text}\n\n"
+            "选题设计 JSON：\n"
+            f"{json.dumps(idea_data, ensure_ascii=False, indent=2)}\n\n"
+            "文献线索：\n"
+            f"{literature_context}\n\n"
+            "文献综述结论：\n"
+            f"{review_context}\n\n"
+            "企业/行业信息采集：\n"
+            f"{web_context}\n\n"
+            "输出 JSON 建议结构：\n"
+            "{\n"
+            '  "current_situation": ["..."],\n'
+            '  "key_problems": [{"problem":"...","evidence":"..."}],\n'
+            '  "root_causes": [{"cause":"...","linked_problem":"...","evidence":"..."}],\n'
+            '  "analysis_summary": "..."\n'
+            "}\n"
+        )
+        self._emit_llm_request(
+            stage="policy_support",
+            operation="three_layer_analysis",
+            system_prompt=POLICY_DIAGNOSIS_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.config.workflow.temperature,
+            max_tokens=max(self.config.llm.max_tokens // 2, 1800),
+            round_idx=1,
+        )
+        raw_text, usage = self._client_complete(
+            system_prompt=POLICY_DIAGNOSIS_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.config.workflow.temperature,
+            max_tokens=max(self.config.llm.max_tokens // 2, 1800),
+            on_delta=lambda piece: self._emit(
+                "stage_delta",
+                stage="policy_support",
+                round=1,
+                text=piece,
+            ),
+        )
+        parsed = extract_json_payload(raw_text)
+        if not isinstance(parsed, dict):
+            parsed = {"raw_response": raw_text}
+        parsed.setdefault("current_situation", [])
+        parsed.setdefault("key_problems", [])
+        parsed.setdefault("root_causes", [])
+        parsed.setdefault("analysis_summary", "")
+        return parsed, usage
+
+    def _run_policy_countermeasure_design(
+        self,
+        *,
+        topic_text: str,
+        idea_data: Dict[str, Any],
+        three_layer_analysis: Dict[str, Any],
+        web_context: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, int]]:
+        user_prompt = (
+            "请基于输入材料设计“对策体系”，并输出 JSON。\n\n"
+            f"主题：{topic_text}\n\n"
+            "选题设计 JSON：\n"
+            f"{json.dumps(idea_data, ensure_ascii=False, indent=2)}\n\n"
+            "现状-问题-原因三层分析 JSON：\n"
+            f"{json.dumps(three_layer_analysis, ensure_ascii=False, indent=2)}\n\n"
+            "企业/行业信息采集：\n"
+            f"{web_context}\n\n"
+            "输出 JSON 建议结构：\n"
+            "{\n"
+            '  "overall_goal": "...",\n'
+            '  "strategy_system": [{"dimension":"...","actions":["..."],"priority":"高/中/低","timeline":"短期/中期/长期"}],\n'
+            '  "implementation_roadmap": [{"phase":"...","tasks":["..."],"owner":"..."}],\n'
+            '  "safeguard_mechanisms": ["..."]\n'
+            "}\n"
+        )
+        self._emit_llm_request(
+            stage="policy_support",
+            operation="countermeasure_design",
+            system_prompt=POLICY_STRATEGY_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.config.workflow.temperature,
+            max_tokens=max(self.config.llm.max_tokens // 2, 1800),
+            round_idx=2,
+        )
+        raw_text, usage = self._client_complete(
+            system_prompt=POLICY_STRATEGY_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.config.workflow.temperature,
+            max_tokens=max(self.config.llm.max_tokens // 2, 1800),
+            on_delta=lambda piece: self._emit(
+                "stage_delta",
+                stage="policy_support",
+                round=2,
+                text=piece,
+            ),
+        )
+        parsed = extract_json_payload(raw_text)
+        if not isinstance(parsed, dict):
+            parsed = {"raw_response": raw_text}
+        parsed.setdefault("overall_goal", "")
+        parsed.setdefault("strategy_system", [])
+        parsed.setdefault("implementation_roadmap", [])
+        parsed.setdefault("safeguard_mechanisms", [])
+        return parsed, usage
+
+    def _format_policy_support_context(self, policy_support_data: Dict[str, Any]) -> str:
+        if not isinstance(policy_support_data, dict) or not policy_support_data:
+            return "对策建议型增强输入未生成。"
+
+        web_part = policy_support_data.get("web_research", {})
+        analysis_part = policy_support_data.get("three_layer_analysis", {})
+        strategy_part = policy_support_data.get("countermeasure_system", {})
+        return (
+            "【企业/行业信息采集】\n"
+            f"{json.dumps(web_part, ensure_ascii=False, indent=2)}\n\n"
+            "【现状-问题-原因 三层分析】\n"
+            f"{json.dumps(analysis_part, ensure_ascii=False, indent=2)}\n\n"
+            "【对策体系设计】\n"
+            f"{json.dumps(strategy_part, ensure_ascii=False, indent=2)}"
+        )
 
     def _expand_literature_queries_with_llm(self, topic_text: str) -> list[str]:
         self._ensure_not_cancelled()
@@ -753,6 +1113,7 @@ class ThesisWorkflow:
 
         if forced_title:
             parsed["thesis_title_cn"] = forced_title
+        parsed = self._normalize_idea_paper_type(parsed)
         return parsed, raw_text, usage
 
     def _run_outline_stage(
@@ -762,6 +1123,8 @@ class ThesisWorkflow:
         literature_context: str,
         review_context: str,
         idea_data: Dict[str, Any],
+        policy_support_data: Dict[str, Any],
+        policy_support_context: str,
     ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
         prompt_template = read_text(
             self.project_root / self.config.workflow.outline_prompt
@@ -773,6 +1136,10 @@ class ThesisWorkflow:
                 "idea_json": json.dumps(idea_data, ensure_ascii=False, indent=2),
                 "literature_context": literature_context,
                 "review_context": review_context,
+                "policy_support_json": json.dumps(
+                    policy_support_data, ensure_ascii=False, indent=2
+                ),
+                "policy_support_context": policy_support_context,
             },
         )
         usage_total = {
@@ -843,6 +1210,8 @@ class ThesisWorkflow:
 
         if not isinstance(final_parsed, dict):
             final_parsed = {"raw_response": merged_text}
+        if self._is_policy_paper(idea_data) and policy_support_data:
+            final_parsed["policy_support"] = policy_support_data
 
         usage_total["rounds"] = len(raw_chunks)
         raw_text_joined = "\n\n\n<!-- CONTINUATION ROUND -->\n\n".join(raw_chunks)
@@ -856,6 +1225,8 @@ class ThesisWorkflow:
         review_context: str,
         idea_data: Dict[str, Any],
         outline_data: Dict[str, Any],
+        policy_support_data: Dict[str, Any],
+        policy_support_context: str,
     ) -> Tuple[str, str, Dict[str, int]]:
         prompt_template = read_text(self.project_root / self.config.workflow.paper_prompt)
         user_prompt = render_template(
@@ -870,6 +1241,10 @@ class ThesisWorkflow:
                 "outline_json": json.dumps(outline_data, ensure_ascii=False, indent=2),
                 "literature_context": literature_context,
                 "review_context": review_context,
+                "policy_support_json": json.dumps(
+                    policy_support_data, ensure_ascii=False, indent=2
+                ),
+                "policy_support_context": policy_support_context,
             },
         )
 
@@ -936,6 +1311,7 @@ class ThesisWorkflow:
         review_text: str,
         idea_data: Dict[str, Any],
         outline_data: Dict[str, Any],
+        policy_support_data: Dict[str, Any],
         usage: Dict[str, Dict[str, int]],
     ) -> Dict[str, Any]:
         review_body = review_text.strip()
@@ -968,13 +1344,111 @@ class ThesisWorkflow:
             },
             "usage": usage,
             "idea_title": self._get_title(idea_data),
+            "idea_paper_type": self._get_paper_type(idea_data),
             "outline_has_chapters": "chapters" in outline_data,
+            "policy_support_enabled": bool(policy_support_data),
         }
 
     def _get_title(self, idea_data: Dict[str, Any]) -> str:
         title = idea_data.get("thesis_title_cn")
         if isinstance(title, str) and title.strip():
             return title.strip()
+        return ""
+
+    def _get_paper_type(self, idea_data: Dict[str, Any]) -> str:
+        paper_type_block = idea_data.get(IDEA_PAPER_TYPE_FIELD)
+        if not isinstance(paper_type_block, dict):
+            paper_type_block = idea_data.get("paper_type_judgement")
+        if not isinstance(paper_type_block, dict):
+            return ""
+        normalized = self._normalize_paper_type_value(
+            paper_type_block.get("recommended_type")
+        )
+        return normalized or ""
+
+    def _is_policy_paper(self, idea_data: Dict[str, Any]) -> bool:
+        return self._get_paper_type(idea_data) == DEFAULT_PAPER_TYPE
+
+    def _normalize_idea_paper_type(self, idea_data: Dict[str, Any]) -> Dict[str, Any]:
+        paper_type_block = idea_data.get(IDEA_PAPER_TYPE_FIELD)
+        if not isinstance(paper_type_block, dict):
+            paper_type_block = idea_data.get("paper_type_judgement")
+        if not isinstance(paper_type_block, dict):
+            paper_type_block = {}
+
+        normalized_type = self._normalize_paper_type_value(
+            paper_type_block.get("recommended_type")
+        )
+        fallback_used = False
+        if not normalized_type:
+            normalized_type = DEFAULT_PAPER_TYPE
+            fallback_used = True
+
+        if isinstance(paper_type_block.get("fallback_used"), bool):
+            fallback_used = bool(paper_type_block.get("fallback_used")) or fallback_used
+
+        decision_basis_raw = paper_type_block.get("decision_basis")
+        decision_basis = (
+            decision_basis_raw if isinstance(decision_basis_raw, dict) else {}
+        )
+
+        topic_features = str(decision_basis.get("topic_features") or "").strip() or "待补充"
+        data_conditions = str(decision_basis.get("data_conditions") or "").strip() or "待补充"
+        student_preference = (
+            str(decision_basis.get("student_preference") or "").strip() or "未明确"
+        )
+
+        selection_reason = str(paper_type_block.get("selection_reason") or "").strip()
+        if not selection_reason:
+            if fallback_used:
+                selection_reason = "缺少稳定判定信息，默认采用“对策建议型”以保证本科阶段可执行。"
+            else:
+                selection_reason = (
+                    f"综合题目特征、数据条件与学生偏好，推荐“{normalized_type}”。"
+                )
+
+        branch_path_raw = paper_type_block.get("branch_path")
+        branch_path: list[str] = []
+        if isinstance(branch_path_raw, list):
+            for step in branch_path_raw:
+                text = str(step).strip()
+                if text and text not in branch_path:
+                    branch_path.append(text)
+        if not branch_path:
+            branch_path = list(
+                PAPER_TYPE_BRANCH_PATHS.get(
+                    normalized_type,
+                    PAPER_TYPE_BRANCH_PATHS[DEFAULT_PAPER_TYPE],
+                )
+            )
+
+        idea_data[IDEA_PAPER_TYPE_FIELD] = {
+            "recommended_type": normalized_type,
+            "decision_basis": {
+                "topic_features": topic_features,
+                "data_conditions": data_conditions,
+                "student_preference": student_preference,
+            },
+            "selection_reason": selection_reason,
+            "fallback_used": fallback_used,
+            "branch_path": branch_path,
+        }
+        idea_data["paper_type_judgement"] = idea_data[IDEA_PAPER_TYPE_FIELD]
+        return idea_data
+
+    def _normalize_paper_type_value(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text in PAPER_TYPE_BRANCH_PATHS:
+            return text
+        lowered = text.lower()
+        alias = PAPER_TYPE_ALIASES.get(lowered)
+        if alias:
+            return alias
+        for keyword, paper_type in PAPER_TYPE_ALIASES.items():
+            if keyword in lowered:
+                return paper_type
         return ""
 
     def _strip_markdown_fence(self, text: str) -> str:

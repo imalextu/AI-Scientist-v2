@@ -19,6 +19,7 @@ const reviewOutput =
   document.getElementById("researchOutput");
 const ideaOutput = document.getElementById("ideaOutput");
 const outlineOutput = document.getElementById("outlineOutput");
+const policySupportOutput = document.getElementById("policySupportOutput");
 const paperOutput = document.getElementById("paperOutput");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 const cacheButtons = Array.from(document.querySelectorAll(".cache-btn"));
@@ -29,6 +30,7 @@ const stageOutputMap = {
   review: reviewOutput,
   idea: ideaOutput,
   outline: outlineOutput,
+  policy_support: policySupportOutput,
   paper: paperOutput,
 };
 const stageLabelMap = {
@@ -36,6 +38,7 @@ const stageLabelMap = {
   review: "00 文献综述 Markdown",
   idea: "01 选题设计 JSON",
   outline: "02 论文大纲 JSON",
+  policy_support: "02a 对策支持 JSON",
   paper: "03 论文正文 Markdown",
 };
 const copyTargetLabelMap = {
@@ -44,6 +47,7 @@ const copyTargetLabelMap = {
   researchOutput: stageLabelMap.review,
   ideaOutput: stageLabelMap.idea,
   outlineOutput: stageLabelMap.outline,
+  policySupportOutput: stageLabelMap.policy_support,
   paperOutput: stageLabelMap.paper,
 };
 
@@ -102,6 +106,7 @@ function clearOutputs(options = {}) {
   stageSequence.forEach((stage) => {
     replaceStageText(stage, "");
   });
+  replaceStageText("policy_support", "");
   setPath("-");
 }
 
@@ -280,8 +285,33 @@ function outputSnapshot() {
     review: reviewOutput.textContent || "",
     idea: ideaOutput.textContent || "",
     outline: outlineOutput.textContent || "",
+    policy_support: policySupportOutput.textContent || "",
     paper: paperOutput.textContent || "",
   };
+}
+
+function extractPolicySupportFromOutlineText(outlineText) {
+  const raw = String(outlineText || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const policy = parsed?.policy_support;
+    if (policy && typeof policy === "object") {
+      return JSON.stringify(policy, null, 2);
+    }
+  } catch (_error) {
+    return "";
+  }
+  return "";
+}
+
+function syncPolicySupportFromOutlineText(outlineText) {
+  const policyText = extractPolicySupportFromOutlineText(outlineText);
+  if (policyText) {
+    replaceStageText("policy_support", policyText);
+  }
 }
 
 function updateResumeStageOptions(manifest) {
@@ -407,6 +437,10 @@ async function loadSelectedCache() {
     stageSequence.forEach((stage) => {
       replaceStageText(stage, outputs[stage] || "");
     });
+    replaceStageText(
+      "policy_support",
+      outputs.policy_support || extractPolicySupportFromOutlineText(outputs.outline || "")
+    );
 
     const manifest = data.cache || {};
     activeCacheId = manifest.cache_id || cacheId;
@@ -507,6 +541,11 @@ async function loadHistoryDir(fileList) {
       fileName: "00_literature_review.md",
       format: (text) => text || "",
     },
+    {
+      stage: "policy_support",
+      fileName: "02a_policy_support.json",
+      format: prettyJsonText,
+    },
     { stage: "outline", fileName: "02_outline.json", format: prettyJsonText },
     { stage: "paper", fileName: "03_thesis.md", format: (text) => text || "" },
   ];
@@ -530,13 +569,17 @@ async function loadHistoryDir(fileList) {
   }
 
   if (loadedCount === 0) {
-    setStatus("未在目录中找到 00_literature/01_idea/00_literature_review/02/03 文件");
+    setStatus("未在目录中找到 00/01/00_review/02a/02/03 文件");
     return;
+  }
+
+  if (!String(policySupportOutput.textContent || "").trim()) {
+    syncPolicySupportFromOutlineText(outlineOutput.textContent || "");
   }
 
   activeCacheId = "";
   updateResumeStageOptions(null);
-  setStatus(`历史结果已加载（${loadedCount}/5）`);
+  setStatus(`历史结果已加载（${loadedCount}/6）`);
 }
 
 function closeSource() {
@@ -577,6 +620,20 @@ function handleEvent(name, payload) {
 
   if (name === "literature_started") {
     logLine(`文献检索开始（provider: ${payload.provider || "-"}）`);
+    return;
+  }
+
+  if (name === "web_search_started") {
+    logLine(
+      `Web 检索开始（provider: ${payload.provider || "-"}, queries: ${
+        payload.query_count || 0
+      }）`
+    );
+    return;
+  }
+
+  if (name === "web_search_completed") {
+    logLine(`Web 检索完成，命中 ${payload.count || 0} 条`);
     return;
   }
 
@@ -635,6 +692,9 @@ function handleEvent(name, payload) {
 
   if (name === "stage_restored") {
     replaceStageText(payload.stage, payload.content || "");
+    if (payload.stage === "outline") {
+      syncPolicySupportFromOutlineText(payload.content || "");
+    }
     const runDir = inferRunDirFromFilePath(payload.path || "");
     if (runDir) {
       setPath(runDir);
@@ -645,6 +705,9 @@ function handleEvent(name, payload) {
 
   if (name === "stage_completed") {
     replaceStageText(payload.stage, payload.content || "");
+    if (payload.stage === "outline") {
+      syncPolicySupportFromOutlineText(payload.content || "");
+    }
     const usage = payload.usage || {};
     const runDir = inferRunDirFromFilePath(payload.path || "");
     if (runDir) {
@@ -701,6 +764,8 @@ function bindSource(jobId) {
     "resume_started",
     "workflow_started",
     "literature_started",
+    "web_search_started",
+    "web_search_completed",
     "literature_query_expanded",
     "literature_completed",
     "stage_started",

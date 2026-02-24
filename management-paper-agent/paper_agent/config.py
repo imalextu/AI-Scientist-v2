@@ -62,6 +62,18 @@ class RetrievalConfig:
 
 
 @dataclass
+class WebSearchConfig:
+    enabled: bool = False
+    provider: str = "bocha"
+    max_results: int = 8
+    api_key_env: str = "BOCHA_API_KEY"
+    api_key: str = ""
+    base_url: str = "https://api.bochaai.com/v1/web-search"
+    freshness: str = "noLimit"
+    summary: bool = True
+
+
+@dataclass
 class WorkflowConfig:
     temperature: float = 0.3
     max_section_tokens: int = 2000
@@ -86,6 +98,7 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     paper: PaperConfig = field(default_factory=PaperConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     project_root: Path = Path(".")
@@ -96,6 +109,14 @@ def _normalize_run_until_stage(raw_value: Any) -> str:
     if stage not in {"literature", "review", "idea", "outline", "paper"}:
         return "paper"
     return stage
+
+
+def _normalize_bocha_freshness(raw_value: Any) -> str:
+    value = str(raw_value or "noLimit").strip()
+    allowed = {"oneDay", "oneWeek", "oneMonth", "oneYear", "noLimit"}
+    if value not in allowed:
+        return "noLimit"
+    return value
 
 
 def _legacy_llm_block(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -165,6 +186,27 @@ def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
     }:
         retrieval_cfg.provider = "openalex"
 
+    web_search_raw = raw.get("web_search", {})
+    if not isinstance(web_search_raw, dict):
+        web_search_raw = {}
+    web_search_provider = str(web_search_raw.get("provider", "bocha")).strip().lower()
+    if web_search_provider not in {"bocha"}:
+        web_search_provider = "bocha"
+    web_search_cfg = WebSearchConfig(
+        enabled=_as_bool(web_search_raw.get("enabled"), False),
+        provider=web_search_provider,
+        max_results=max(1, _as_int(web_search_raw.get("max_results"), 8)),
+        api_key_env=str(web_search_raw.get("api_key_env", "BOCHA_API_KEY")),
+        api_key=str(web_search_raw.get("api_key", "")),
+        base_url=str(
+            web_search_raw.get("base_url", "https://api.bochaai.com/v1/web-search")
+        ),
+        freshness=_normalize_bocha_freshness(
+            web_search_raw.get("freshness", "noLimit")
+        ),
+        summary=_as_bool(web_search_raw.get("summary"), True),
+    )
+
     workflow_raw = raw.get("workflow", {})
     workflow_cfg = WorkflowConfig(
         temperature=_as_float(workflow_raw.get("temperature"), 0.3),
@@ -196,6 +238,7 @@ def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
         llm=llm_cfg,
         paper=paper_cfg,
         retrieval=retrieval_cfg,
+        web_search=web_search_cfg,
         workflow=workflow_cfg,
         runtime=runtime_cfg,
         project_root=project_root.resolve(),

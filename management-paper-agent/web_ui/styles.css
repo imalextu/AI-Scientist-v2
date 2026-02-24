@@ -257,6 +257,20 @@ button:disabled {
   opacity: 1;
 }
 
+.export-btn {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--muted);
+  background: #f3f8ff;
+  white-space: nowrap;
+}
+
+.export-btn:hover:not(:disabled) {
+  opacity: 1;
+}
+
 #statusLine,
 #pathLine {
   margin: 10px 0 0;

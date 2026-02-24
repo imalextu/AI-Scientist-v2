@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+from io import BytesIO
 import json
 import queue
 import re
@@ -11,7 +12,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    request,
+    send_file,
+    send_from_directory,
+    stream_with_context,
+)
 
 from paper_agent.config import load_config_from_text
 from paper_agent.workflow import ThesisWorkflow, WorkflowCancelledError
@@ -46,6 +55,12 @@ AUX_OUTPUT_FILE_SPECS: Dict[str, tuple[str, str]] = {
 }
 CACHE_ROOT = SCRIPT_DIR / ".cache_store"
 CACHE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+INVALID_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]+')
+MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+MARKDOWN_ORDERED_LIST_RE = re.compile(r"^(\s*)\d+[.)]\s+(.+)$")
+MARKDOWN_UNORDERED_LIST_RE = re.compile(r"^(\s*)[-*+]\s+(.+)$")
+MARKDOWN_QUOTE_RE = re.compile(r"^>\s?(.*)$")
+MARKDOWN_HORIZONTAL_RULE_RE = re.compile(r"^([-*_])\1{2,}$")
 
 
 def parse_stage(value: Any) -> str | None:
@@ -233,6 +248,163 @@ def format_sse_event(event: str, payload: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {content}\n\n"
 
 
+def sanitize_docx_filename(raw_name: Any) -> str:
+    candidate = str(raw_name or "").strip()
+    if not candidate:
+        return "03_thesis.docx"
+    candidate = INVALID_FILENAME_CHARS_RE.sub("_", candidate)
+    candidate = re.sub(r"\s+", " ", candidate).strip(" .")
+    if not candidate:
+        candidate = "03_thesis"
+    if not candidate.lower().endswith(".docx"):
+        candidate = f"{candidate}.docx"
+    return candidate
+
+
+def normalize_markdown_inline_text(raw_text: str) -> str:
+    text = str(raw_text or "")
+    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"_([^_]+)_", r"\1", text)
+    text = re.sub(r"~~([^~]+)~~", r"\1", text)
+    return text.strip()
+
+
+def flush_paragraph_buffer(document: Any, lines: list[str]) -> None:
+    if not lines:
+        return
+    paragraph_text = " ".join(
+        normalize_markdown_inline_text(line) for line in lines if str(line).strip()
+    ).strip()
+    lines.clear()
+    if paragraph_text:
+        document.add_paragraph(paragraph_text)
+
+
+def add_code_block(document: Any, lines: list[str], pt_factory: Any) -> None:
+    if not lines:
+        return
+    code_text = "\n".join(lines).rstrip("\n")
+    lines.clear()
+    if not code_text:
+        return
+    paragraph = document.add_paragraph()
+    run = paragraph.add_run(code_text)
+    run.font.name = "Courier New"
+    run.font.size = pt_factory(10)
+
+
+def add_list_item(
+    document: Any,
+    content: str,
+    ordered: bool,
+    pt_factory: Any,
+    indent_level: int = 0,
+) -> None:
+    text = normalize_markdown_inline_text(content)
+    if not text:
+        return
+    style_name = "List Number" if ordered else "List Bullet"
+    try:
+        paragraph = document.add_paragraph(text, style=style_name)
+    except KeyError:
+        marker = "1." if ordered else "•"
+        paragraph = document.add_paragraph(f"{marker} {text}")
+    if indent_level > 0:
+        paragraph.paragraph_format.left_indent = pt_factory(18 * indent_level)
+
+
+def markdown_to_docx_buffer(markdown_text: str) -> BytesIO:
+    try:
+        from docx import Document
+        from docx.shared import Pt
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "未安装 python-docx，请先执行：pip install -r requirements.txt"
+        ) from exc
+
+    document = Document()
+    lines = str(markdown_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    paragraph_lines: list[str] = []
+    code_lines: list[str] = []
+    in_code_block = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            if in_code_block:
+                add_code_block(document, code_lines, Pt)
+                in_code_block = False
+            else:
+                flush_paragraph_buffer(document, paragraph_lines)
+                in_code_block = True
+            continue
+
+        if in_code_block:
+            code_lines.append(line)
+            continue
+
+        if not stripped:
+            flush_paragraph_buffer(document, paragraph_lines)
+            continue
+
+        heading_match = MARKDOWN_HEADING_RE.match(stripped)
+        if heading_match:
+            flush_paragraph_buffer(document, paragraph_lines)
+            level = min(len(heading_match.group(1)), 6)
+            heading_text = normalize_markdown_inline_text(heading_match.group(2))
+            if heading_text:
+                document.add_heading(heading_text, level=level)
+            continue
+
+        ordered_match = MARKDOWN_ORDERED_LIST_RE.match(line)
+        unordered_match = MARKDOWN_UNORDERED_LIST_RE.match(line)
+        if ordered_match or unordered_match:
+            flush_paragraph_buffer(document, paragraph_lines)
+            match = ordered_match if ordered_match else unordered_match
+            if match:
+                indent_spaces = len(match.group(1).expandtabs(2))
+                add_list_item(
+                    document,
+                    match.group(2),
+                    ordered=bool(ordered_match),
+                    pt_factory=Pt,
+                    indent_level=min(indent_spaces // 2, 8),
+                )
+            continue
+
+        quote_match = MARKDOWN_QUOTE_RE.match(stripped)
+        if quote_match:
+            flush_paragraph_buffer(document, paragraph_lines)
+            quote_text = normalize_markdown_inline_text(quote_match.group(1))
+            if quote_text:
+                paragraph = document.add_paragraph(quote_text)
+                paragraph.paragraph_format.left_indent = Pt(18)
+            continue
+
+        if MARKDOWN_HORIZONTAL_RULE_RE.match(stripped):
+            flush_paragraph_buffer(document, paragraph_lines)
+            document.add_paragraph("-" * 40)
+            continue
+
+        paragraph_lines.append(stripped)
+
+    if in_code_block:
+        add_code_block(document, code_lines, Pt)
+    flush_paragraph_buffer(document, paragraph_lines)
+
+    output = BytesIO()
+    document.save(output)
+    output.seek(0)
+    return output
+
+
 @app.get("/")
 def index() -> Response:
     return send_from_directory(UI_DIR, "index.html")
@@ -241,6 +413,29 @@ def index() -> Response:
 @app.get("/api/initial")
 def initial() -> Response:
     return jsonify(DEFAULTS)
+
+
+@app.post("/api/export/word")
+def export_word() -> Response:
+    payload = request.get_json(silent=True) or {}
+    markdown_text = str(payload.get("markdown", ""))
+    if not markdown_text.strip():
+        return jsonify({"error": "markdown 不能为空"}), 400
+
+    file_name = sanitize_docx_filename(payload.get("file_name"))
+    try:
+        docx_buffer = markdown_to_docx_buffer(markdown_text)
+    except Exception as exc:
+        return jsonify({"error": f"导出 Word 失败: {exc}"}), 500
+
+    return send_file(
+        docx_buffer,
+        as_attachment=True,
+        download_name=file_name,
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+    )
 
 
 @app.post("/api/cache/save")

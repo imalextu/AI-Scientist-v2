@@ -25,6 +25,7 @@ const policyCountermeasureOutput = document.getElementById("policyCountermeasure
 const paperInitialOutput = document.getElementById("paperInitialOutput");
 const paperAuditOutput = document.getElementById("paperAuditOutput");
 const paperOutput = document.getElementById("paperOutput");
+const exportWordBtn = document.getElementById("exportWordBtn");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 const cacheButtons = Array.from(document.querySelectorAll(".cache-btn"));
 
@@ -256,6 +257,123 @@ async function copyOutputContent(button) {
   } catch (error) {
     setStatus(`复制失败：${targetLabel}`);
     logLine(`复制失败（${targetLabel}）：${error.message}`);
+  }
+}
+
+function sanitizeFilenamePart(rawText) {
+  const cleaned = String(rawText || "")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "03_thesis";
+}
+
+function inferPaperTitle() {
+  const manualTitle = titleInput.value.trim();
+  if (manualTitle) {
+    return manualTitle;
+  }
+  const ideaText = ideaOutput.textContent || "";
+  if (ideaText.trim()) {
+    try {
+      const ideaObj = JSON.parse(ideaText);
+      const generatedTitle = String(ideaObj?.thesis_title_cn || "").trim();
+      if (generatedTitle) {
+        return generatedTitle;
+      }
+    } catch (_error) {
+      // ignore parse error and use fallback name
+    }
+  }
+  return "03_thesis";
+}
+
+function parseDownloadNameFromHeaders(response) {
+  const disposition = String(response.headers.get("Content-Disposition") || "");
+  if (!disposition) {
+    return "";
+  }
+  const encodedMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch && encodedMatch[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch (_error) {
+      return encodedMatch[1];
+    }
+  }
+  const quotedMatch = disposition.match(/filename="([^"]+)"/i);
+  if (quotedMatch && quotedMatch[1]) {
+    return quotedMatch[1];
+  }
+  const plainMatch = disposition.match(/filename=([^;]+)/i);
+  if (plainMatch && plainMatch[1]) {
+    return plainMatch[1].trim();
+  }
+  return "";
+}
+
+function triggerFileDownload(blob, fileName) {
+  const fileUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = fileUrl;
+  anchor.download = fileName;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(fileUrl);
+}
+
+async function exportPaperToWord() {
+  const markdownText = paperOutput.textContent || "";
+  if (!markdownText.trim()) {
+    setStatus("导出失败：论文正文为空");
+    return;
+  }
+
+  const fallbackFileName = `${sanitizeFilenamePart(inferPaperTitle())}.docx`;
+  const defaultLabel = exportWordBtn ? exportWordBtn.textContent : "导出 Word";
+
+  if (exportWordBtn) {
+    exportWordBtn.disabled = true;
+    exportWordBtn.textContent = "导出中...";
+  }
+  setStatus("导出 Word 中");
+
+  try {
+    const response = await fetch("/api/export/word", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        markdown: markdownText,
+        file_name: fallbackFileName,
+      }),
+    });
+
+    if (!response.ok) {
+      let errorMessage = "导出 Word 失败";
+      try {
+        const data = await response.json();
+        errorMessage = data.error || errorMessage;
+      } catch (_error) {
+        // keep default error message
+      }
+      throw new Error(errorMessage);
+    }
+
+    const blob = await response.blob();
+    const downloadName = parseDownloadNameFromHeaders(response) || fallbackFileName;
+    triggerFileDownload(blob, downloadName);
+    setStatus(`已导出 Word：${downloadName}`);
+    logLine(`Word 导出成功：${downloadName}`);
+  } catch (error) {
+    setStatus("导出 Word 失败");
+    logLine(`Word 导出失败：${error.message}`);
+  } finally {
+    if (exportWordBtn) {
+      exportWordBtn.disabled = false;
+      exportWordBtn.textContent = defaultLabel;
+    }
   }
 }
 
@@ -1087,6 +1205,12 @@ cacheSelect.addEventListener("change", () => {
 resumeBtn.addEventListener("click", () => {
   resumeFromCache();
 });
+
+if (exportWordBtn) {
+  exportWordBtn.addEventListener("click", () => {
+    exportPaperToWord();
+  });
+}
 
 async function bootstrap() {
   await loadInitial();

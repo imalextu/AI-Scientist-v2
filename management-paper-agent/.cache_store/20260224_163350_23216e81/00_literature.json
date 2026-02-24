@@ -1,0 +1,66 @@
+[
+  {
+    "title": "A strategic framework for artificial intelligence in marketing",
+    "authors": "Ming‐Hui Huang, Roland T. Rust",
+    "year": "2020",
+    "venue": "Journal of the Academy of Marketing Science",
+    "abstract": "Abstract The authors develop a three-stage framework for strategic marketing planning, incorporating multiple artificial intelligence (AI) benefits: mechanical AI for automating repetitive marketing functions and activities, thinking AI for processing data to arrive at decisions, and feeling AI for analyzing interactions and human emotions. This framework lays out the ways that AI can be used for marketing research, strategy (segmentation, targeting, and positioning, STP), and actions. At the marketing research stage, mechanical AI can be used for data collection, thinking AI for market analysis, and feeling AI for customer understanding. At the marketing strategy (STP) stage, mechanical AI can be used for segmentation (segment recognition), thinking AI for targeting (segment recommendation), and feeling AI for positioning (segment resonance). At the marketing action stage, mechanical AI can be used for standardization, thinking AI for personalization, and feeling AI for relationalization. We apply this framework to various areas of marketing, organized by marketing 4Ps/4Cs, to illustrate the strategic use of AI.",
+    "source": "OpenAlex (DOI: 10.1007/s11747-020-00749-9)"
+  },
+  {
+    "title": "Artificial Intelligence (AI): Multidisciplinary perspectives on emerging challenges, opportunities, and agenda for research, practice and policy",
+    "authors": "Yogesh K. Dwivedi, Laurie Hughes, Elvira Ismagilova, Gert Aarts, Crispin Coombs, Tom Crick, Yanqing Duan, Rohita Dwivedi",
+    "year": "2019",
+    "venue": "International Journal of Information Management",
+    "abstract": "",
+    "source": "OpenAlex (DOI: 10.1016/j.ijinfomgt.2019.08.002)"
+  },
+  {
+    "title": "The future of technology and marketing: a multidisciplinary perspective",
+    "authors": "Dhruv Grewal, John Hulland, Praveen K. Kopalle, Elena Karahanna",
+    "year": "2019",
+    "venue": "Journal of the Academy of Marketing Science",
+    "abstract": "",
+    "source": "OpenAlex (DOI: 10.1007/s11747-019-00711-4)"
+  },
+  {
+    "title": "Opinion Paper: “So what if ChatGPT wrote it?” Multidisciplinary perspectives on opportunities, challenges and implications of generative conversational AI for research, practice and policy",
+    "authors": "Yogesh K. Dwivedi, Nir Kshetri, Laurie Hughes, Emma Slade, Anand Jeyaraj, Arpan Kumar Kar, Abdullah M. Baabdullah, Alex Koohang",
+    "year": "2023",
+    "venue": "International Journal of Information Management",
+    "abstract": "",
+    "source": "OpenAlex (DOI: 10.1016/j.ijinfomgt.2023.102642)"
+  },
+  {
+    "title": "Technological disruptions in services: lessons from tourism and hospitality",
+    "authors": "Dimitrios Buhalis, Tracy Harwood, Vanja Bogicevic, Giampaolo Viglia, Srikanth Beldona, Charles F. Hofacker",
+    "year": "2019",
+    "venue": "Journal of service management",
+    "abstract": "Purpose Technological disruptions such as the Internet of Things and autonomous devices, enhanced analytical capabilities (artificial intelligence) and rich media (virtual and augmented reality) are creating smart environments that are transforming industry structures, processes and practices. The purpose of this paper is to explore critical technological advancements using a value co-creation lens to provide insights into service innovations that impact ecosystems. The paper provides examples from tourism and hospitality industries as an information dependent service management context. Design/methodology/approach The research synthesizes prevailing theories of co-creation, service ecosystems, networks and technology disruption with emerging technological developments. Findings Findings highlight the need for research into service innovations in the tourism and hospitality sector at both macro-market and micro-firm levels, emanating from the rapid and radical nature of technological advancements. Specifically, the paper identifies three areas of likely future disruption in service experiences that may benefit from immediate attention: extra-sensory experiences, hyper-personalized experiences and beyond-automation experiences. Research limitations/implications Tourism and hospitality services prevail under varying levels of infrastructure, organization and cultural constraints. This paper provides an overview of potential disruptions and developments and does not delve into individual destination types and settings. This will require future work that conceptualizes and examines how stakeholders may adapt within specific contexts. Social implications Technological disruptions impact all facets of life. A comprehensive picture of developments here provides policymakers with nuanced perspectives to better prepare for impending change. Originality/value Guest experiences in tourism and hospitality by definition take place in hostile environments that are outside the safety and familiarity of one’s own surroundings. The emergence of smart environments will redefine how customers navigate their experiences. At a conceptual level, this requires a complete rethink of how stakeholders should leverage technologies, engage and reengineer services to remain competitive. The paper illustrates how technology disrupts industry structures and stimulates value co-creation at the micro and macro-societal level.",
+    "source": "OpenAlex (DOI: 10.1108/josm-12-2018-0398)"
+  },
+  {
+    "title": "Artificial intelligence in supply chain management: A systematic literature review",
+    "authors": "Reza Toorajipour, Vahid Sohrabpour, Ali Nazarpour, Pejvak Oghazi, Maria Fischl",
+    "year": "2020",
+    "venue": "Journal of Business Research",
+    "abstract": "This paper seeks to identify the contributions of artificial intelligence (AI) to supply chain management (SCM) through a systematic review of the existing literature. To address the current scientific gap of AI in SCM, this study aimed to determine the current and potential AI techniques that can enhance both the study and practice of SCM. Gaps in the literature that need to be addressed through scientific research were also identified. More specifically, the following four aspects were covered: (1) the most prevalent AI techniques in SCM; (2) the potential AI techniques for employment in SCM; (3) the current AI-improved SCM subfields; and (4) the subfields that have high potential to be enhanced by AI. A specific set of inclusion and exclusion criteria are used to identify and examine papers from four SCM fields: logistics, marketing, supply chain and production. This paper provides insights through systematic analysis and synthesis.",
+    "source": "OpenAlex (DOI: 10.1016/j.jbusres.2020.09.009)"
+  },
+  {
+    "title": "ChatGPT and Open-AI Models: A Preliminary Review",
+    "authors": "Konstantinos I. Roumeliotis, Nikolaos D. Tselikas",
+    "year": "2023",
+    "venue": "Future Internet",
+    "abstract": "According to numerous reports, ChatGPT represents a significant breakthrough in the field of artificial intelligence. ChatGPT is a pre-trained AI model designed to engage in natural language conversations, utilizing sophisticated techniques from Natural Language Processing (NLP), Supervised Learning, and Reinforcement Learning to comprehend and generate text comparable to human-generated text. This article provides an overview of the training process and fundamental functionality of ChatGPT, accompanied by a preliminary review of the relevant literature. Notably, this article presents the first comprehensive literature review of this technology at the time of publication, aiming to aggregate all the available pertinent articles to facilitate further developments in the field. Ultimately, the authors aim to offer an appraisal of the technology’s potential implications on existing knowledge and technology, along with potential challenges that must be addressed.",
+    "source": "OpenAlex (DOI: 10.3390/fi15060192)"
+  },
+  {
+    "title": "AI-Based Modeling: Techniques, Applications and Research Issues Towards Automation, Intelligent and Smart Systems",
+    "authors": "Iqbal H. Sarker",
+    "year": "2022",
+    "venue": "SN Computer Science",
+    "abstract": "",
+    "source": "OpenAlex (DOI: 10.1007/s42979-022-01043-x)"
+  }
+]

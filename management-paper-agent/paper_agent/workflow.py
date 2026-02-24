@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
 from .config import AppConfig
 from .llm_client import LLMClient, RequestCancelledError
+from .paper_revision import PaperRevisionService
 from .retrieval import LiteratureRetriever, format_literature_context
 from .web_search import WebSearchClient, format_web_search_context
 from .utils import (
@@ -144,6 +146,20 @@ class ThesisWorkflow:
         self.config = config
         self.project_root = Path(config.project_root).resolve()
         self.client = LLMClient(config.llm)
+        self.paper_audit_client: LLMClient | None = None
+        self.paper_revision_service: PaperRevisionService | None = None
+        if self.config.workflow.paper_audit_enabled:
+            audit_model = (
+                str(self.config.workflow.paper_audit_model).strip()
+                or self.config.llm.model
+            )
+            audit_llm_config = replace(self.config.llm, model=audit_model)
+            self.paper_audit_client = LLMClient(audit_llm_config)
+            self.paper_revision_service = PaperRevisionService(
+                reviewer_client=self.paper_audit_client,
+                reviser_client=self.client,
+                continuation_tail_chars=self.config.workflow.continuation_tail_chars,
+            )
         self.retriever = LiteratureRetriever(
             config.retrieval,
             query_expander=self._expand_literature_queries_with_llm,
@@ -248,9 +264,39 @@ class ThesisWorkflow:
             "total_tokens": 0,
             "rounds": 0,
         }
+        paper_initial_md = ""
+        paper_audit_md = ""
         thesis_md = ""
+        paper_initial_raw = ""
+        paper_audit_raw = ""
         thesis_raw = ""
-        paper_usage: Dict[str, int] = {
+        paper_usage: Dict[str, Dict[str, int]] = {
+            "generation": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "rounds": 0,
+            },
+            "audit": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "rounds": 0,
+            },
+            "revision": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "rounds": 0,
+            },
+            "total": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "rounds": 0,
+            },
+        }
+        paper_total_usage: Dict[str, int] = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
@@ -450,7 +496,7 @@ class ThesisWorkflow:
         if _should_execute("paper"):
             self._ensure_not_cancelled()
             self._emit("stage_started", stage="paper")
-            thesis_md, thesis_raw, paper_usage = self._run_paper_stage(
+            paper_stage_result = self._run_paper_stage(
                 topic_text=topic_text,
                 literature_context=literature_context,
                 review_context=review_context,
@@ -459,14 +505,53 @@ class ThesisWorkflow:
                 policy_support_data=policy_support_data,
                 policy_support_context=policy_support_context,
             )
+            paper_initial_md = str(paper_stage_result.get("initial_text") or "").strip()
+            paper_audit_md = str(paper_stage_result.get("audit_text") or "").strip()
+            thesis_md = str(paper_stage_result.get("final_text") or "").strip()
+            paper_initial_raw = str(paper_stage_result.get("initial_raw") or "")
+            paper_audit_raw = str(paper_stage_result.get("audit_raw") or "")
+            thesis_raw = str(paper_stage_result.get("final_raw") or "")
+
+            raw_usage = paper_stage_result.get("usage")
+            if isinstance(raw_usage, dict):
+                paper_usage = raw_usage
+            total_usage = (
+                paper_usage.get("total", {})
+                if isinstance(paper_usage, dict)
+                else {}
+            )
+            if isinstance(total_usage, dict):
+                paper_total_usage = {
+                    "prompt_tokens": int(total_usage.get("prompt_tokens", 0)),
+                    "completion_tokens": int(total_usage.get("completion_tokens", 0)),
+                    "total_tokens": int(total_usage.get("total_tokens", 0)),
+                    "rounds": int(total_usage.get("rounds", 0)),
+                }
+
+            write_text(run_dir / "03a_thesis_initial.md", paper_initial_md)
+            write_text(run_dir / "03b_thesis_audit.md", paper_audit_md)
             write_text(run_dir / "03_thesis.md", thesis_md)
             self._ensure_not_cancelled()
+            self._emit(
+                "stage_completed",
+                stage="paper_initial",
+                path=str(run_dir / "03a_thesis_initial.md"),
+                content=paper_initial_md,
+                usage=paper_usage.get("generation", paper_total_usage),
+            )
+            self._emit(
+                "stage_completed",
+                stage="paper_audit",
+                path=str(run_dir / "03b_thesis_audit.md"),
+                content=paper_audit_md,
+                usage=paper_usage.get("audit", paper_total_usage),
+            )
             self._emit(
                 "stage_completed",
                 stage="paper",
                 path=str(run_dir / "03_thesis.md"),
                 content=thesis_md,
-                usage=paper_usage,
+                usage=paper_total_usage,
             )
             executed_stages.append("paper")
 
@@ -479,6 +564,8 @@ class ThesisWorkflow:
             if "outline" in executed_stages:
                 write_text(run_dir / "raw_02_outline.txt", outline_raw)
             if "paper" in executed_stages:
+                write_text(run_dir / "raw_03a_paper_initial.txt", paper_initial_raw)
+                write_text(run_dir / "raw_03b_paper_audit.txt", paper_audit_raw)
                 write_text(run_dir / "raw_03_paper.txt", thesis_raw)
 
         self._ensure_not_cancelled()
@@ -492,12 +579,16 @@ class ThesisWorkflow:
             review_text=review_text,
             idea_data=idea_data,
             outline_data=outline_data,
+            paper_initial_text=paper_initial_md,
+            paper_audit_text=paper_audit_md,
+            paper_final_text=thesis_md,
             usage={
                 "review": review_usage,
                 "idea": idea_usage,
                 "outline": outline_usage,
                 "policy_support": policy_support_usage,
-                "paper": paper_usage,
+                "paper": paper_total_usage,
+                "paper_details": paper_usage,
             },
             policy_support_data=policy_support_data,
         )
@@ -1227,7 +1318,7 @@ class ThesisWorkflow:
         outline_data: Dict[str, Any],
         policy_support_data: Dict[str, Any],
         policy_support_context: str,
-    ) -> Tuple[str, str, Dict[str, int]]:
+    ) -> Dict[str, Any]:
         prompt_template = read_text(self.project_root / self.config.workflow.paper_prompt)
         user_prompt = render_template(
             prompt_template,
@@ -1248,37 +1339,50 @@ class ThesisWorkflow:
             },
         )
 
-        usage_total = {
+        generation_usage = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
+            "rounds": 0,
         }
         raw_chunks: list[str] = []
         merged_paper = ""
 
         max_rounds = max(1, self.config.workflow.paper_max_rounds)
         current_prompt = user_prompt
+        self._emit("stage_started", stage="paper_initial")
 
         for round_idx in range(max_rounds):
             self._ensure_not_cancelled()
-            self._emit("stage_round_started", stage="paper", round=round_idx + 1)
+            current_round = round_idx + 1
+            self._emit("stage_round_started", stage="paper_initial", round=current_round)
+            self._emit_llm_request(
+                stage="paper_initial",
+                operation="paper_generation",
+                system_prompt=PAPER_SYSTEM_PROMPT,
+                user_prompt=current_prompt,
+                temperature=self.config.workflow.temperature,
+                max_tokens=self.config.llm.max_tokens,
+                round_idx=current_round,
+                model=self.config.llm.model,
+            )
             raw_text, usage, finish_reason = self._client_complete_with_meta(
                 system_prompt=PAPER_SYSTEM_PROMPT,
                 user_prompt=current_prompt,
                 temperature=self.config.workflow.temperature,
                 max_tokens=self.config.llm.max_tokens,
-                on_delta=lambda piece, current_round=round_idx + 1: self._emit_stage_delta(
-                    "paper",
-                    current_round,
+                on_delta=lambda piece, running_round=current_round: self._emit_stage_delta(
+                    "paper_initial",
+                    running_round,
                     piece,
                 ),
             )
             raw_chunks.append(raw_text)
-            self._accumulate_usage(usage_total, usage)
+            self._accumulate_usage(generation_usage, usage)
             self._emit(
                 "stage_round_completed",
-                stage="paper",
-                round=round_idx + 1,
+                stage="paper_initial",
+                round=current_round,
                 finish_reason=finish_reason,
             )
 
@@ -1295,9 +1399,153 @@ class ThesisWorkflow:
 
             current_prompt = self._build_continuation_prompt(merged_paper)
 
-        usage_total["rounds"] = len(raw_chunks)
-        raw_text_joined = "\n\n\n<!-- CONTINUATION ROUND -->\n\n".join(raw_chunks)
-        return merged_paper.strip(), raw_text_joined.strip(), usage_total
+        generation_usage["rounds"] = len(raw_chunks)
+        initial_text = merged_paper.strip()
+        initial_raw = "\n\n\n<!-- CONTINUATION ROUND -->\n\n".join(raw_chunks).strip()
+
+        zero_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "rounds": 0,
+        }
+        total_usage = {
+            "prompt_tokens": int(generation_usage.get("prompt_tokens", 0)),
+            "completion_tokens": int(generation_usage.get("completion_tokens", 0)),
+            "total_tokens": int(generation_usage.get("total_tokens", 0)),
+            "rounds": int(generation_usage.get("rounds", 0)),
+        }
+
+        if not self.config.workflow.paper_audit_enabled:
+            audit_text = "审核层未启用，已跳过审核与改写。"
+            return {
+                "initial_text": initial_text,
+                "audit_text": audit_text,
+                "final_text": initial_text,
+                "initial_raw": initial_raw,
+                "audit_raw": audit_text,
+                "final_raw": initial_raw,
+                "usage": {
+                    "generation": generation_usage,
+                    "audit": dict(zero_usage),
+                    "revision": dict(zero_usage),
+                    "total": total_usage,
+                },
+            }
+
+        if not self.paper_revision_service:
+            audit_text = "审核层启用但服务未初始化，已返回初稿。"
+            return {
+                "initial_text": initial_text,
+                "audit_text": audit_text,
+                "final_text": initial_text,
+                "initial_raw": initial_raw,
+                "audit_raw": audit_text,
+                "final_raw": initial_raw,
+                "usage": {
+                    "generation": generation_usage,
+                    "audit": dict(zero_usage),
+                    "revision": dict(zero_usage),
+                    "total": total_usage,
+                },
+            }
+
+        self._emit("stage_started", stage="paper_audit")
+        stage_map = {"paper_audit": "paper_audit", "paper_revision": "paper"}
+        current_revision_round: Dict[str, int] = {"round": 1}
+
+        def _paper_revision_on_request(payload: Dict[str, Any]) -> None:
+            operation = str(payload.get("operation") or "").strip()
+            stage_name = stage_map.get(operation, "paper")
+            round_idx = int(payload.get("round") or 1)
+            if operation == "paper_revision":
+                current_revision_round["round"] = round_idx
+            self._emit("stage_round_started", stage=stage_name, round=round_idx)
+            self._emit_llm_request(
+                stage=stage_name,
+                operation=operation or "paper_revision",
+                system_prompt=str(payload.get("system_prompt") or ""),
+                user_prompt=str(payload.get("user_prompt") or ""),
+                temperature=(
+                    float(payload["temperature"])
+                    if payload.get("temperature") is not None
+                    else None
+                ),
+                max_tokens=(
+                    int(payload["max_tokens"])
+                    if payload.get("max_tokens") is not None
+                    else None
+                ),
+                round_idx=round_idx,
+                model=str(payload.get("model") or self.config.llm.model),
+            )
+
+        def _paper_revision_on_round_completed(payload: Dict[str, Any]) -> None:
+            operation = str(payload.get("operation") or "").strip()
+            stage_name = stage_map.get(operation, "paper")
+            round_idx = int(payload.get("round") or 1)
+            self._emit(
+                "stage_round_completed",
+                stage=stage_name,
+                round=round_idx,
+                finish_reason=str(payload.get("finish_reason") or ""),
+            )
+
+        try:
+            revision_result = self.paper_revision_service.audit_and_revise_once(
+                topic_text=topic_text,
+                paper_draft=initial_text,
+                idea_data=idea_data,
+                outline_data=outline_data,
+                review_context=review_context,
+                literature_context=literature_context,
+                audit_temperature=self.config.workflow.paper_audit_temperature,
+                audit_max_tokens=self.config.workflow.paper_audit_max_tokens,
+                revision_temperature=self.config.workflow.paper_revision_temperature,
+                revision_max_tokens=self.config.workflow.paper_revision_max_tokens,
+                revision_max_rounds=self.config.workflow.paper_revision_max_rounds,
+                cancel_checker=self._is_cancelled,
+                on_audit_delta=lambda piece: self._emit_stage_delta("paper_audit", 1, piece),
+                on_revision_delta=lambda piece: self._emit_stage_delta(
+                    "paper",
+                    int(current_revision_round.get("round", 1)),
+                    piece,
+                ),
+                on_request=_paper_revision_on_request,
+                on_round_completed=_paper_revision_on_round_completed,
+            )
+        except RequestCancelledError as exc:
+            raise WorkflowCancelledError(str(exc) or "任务已取消") from exc
+
+        audit_usage = revision_result.usage.get("audit", dict(zero_usage))
+        revision_usage = revision_result.usage.get("revision", dict(zero_usage))
+        self._accumulate_usage(total_usage, audit_usage)
+        self._accumulate_usage(total_usage, revision_usage)
+        total_usage["rounds"] = (
+            int(generation_usage.get("rounds", 0))
+            + int(audit_usage.get("rounds", 0))
+            + int(revision_usage.get("rounds", 0))
+        )
+
+        final_text = revision_result.revised_text.strip() or initial_text
+        final_raw = revision_result.revised_raw.strip() or final_text
+        audit_text = revision_result.audit_text.strip() or "审核未返回有效内容。"
+        audit_raw = revision_result.audit_raw or audit_text
+
+        return {
+            "initial_text": initial_text,
+            "audit_text": audit_text,
+            "final_text": final_text,
+            "initial_raw": initial_raw,
+            "audit_raw": audit_raw,
+            "final_raw": final_raw,
+            "usage": {
+                "generation": generation_usage,
+                "audit": audit_usage,
+                "revision": revision_usage,
+                "total": total_usage,
+            },
+        }
 
     def _build_metadata(
         self,
@@ -1311,10 +1559,16 @@ class ThesisWorkflow:
         review_text: str,
         idea_data: Dict[str, Any],
         outline_data: Dict[str, Any],
+        paper_initial_text: str,
+        paper_audit_text: str,
+        paper_final_text: str,
         policy_support_data: Dict[str, Any],
         usage: Dict[str, Dict[str, int]],
     ) -> Dict[str, Any]:
         review_body = review_text.strip()
+        paper_initial_body = paper_initial_text.strip()
+        paper_audit_body = paper_audit_text.strip()
+        paper_final_body = paper_final_text.strip()
         return {
             "run_id": run_id,
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -1341,6 +1595,18 @@ class ThesisWorkflow:
                 "enabled": True,
                 "has_content": bool(review_body),
                 "char_count": len(review_body),
+            },
+            "paper_audit": {
+                "enabled": bool(self.config.workflow.paper_audit_enabled),
+                "model": (
+                    self.config.workflow.paper_audit_model
+                    if self.config.workflow.paper_audit_enabled
+                    else ""
+                ),
+                "initial_char_count": len(paper_initial_body),
+                "audit_char_count": len(paper_audit_body),
+                "final_char_count": len(paper_final_body),
+                "has_audit_content": bool(paper_audit_body),
             },
             "usage": usage,
             "idea_title": self._get_title(idea_data),
@@ -1619,13 +1885,14 @@ class ThesisWorkflow:
         temperature: float | None,
         max_tokens: int | None,
         round_idx: int | None = None,
+        model: str | None = None,
     ) -> None:
         self._emit(
             "llm_request",
             stage=stage,
             operation=operation,
             round=round_idx,
-            model=self.config.llm.model,
+            model=model or self.config.llm.model,
             temperature=temperature,
             max_tokens=max_tokens,
             prompt_char_limit=LLM_LOG_PROMPT_CHAR_LIMIT,

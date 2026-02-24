@@ -84,6 +84,13 @@ class WorkflowConfig:
     paper_prompt: str = "prompts/paper_writer.md"
     outline_max_rounds: int = 4
     paper_max_rounds: int = 6
+    paper_audit_enabled: bool = True
+    paper_audit_model: str = "Qwen/Qwen3-VL-235B-A22B-Instruct"
+    paper_audit_temperature: float = 0.2
+    paper_audit_max_tokens: int = 4200
+    paper_revision_temperature: float = 0.2
+    paper_revision_max_tokens: int = 7000
+    paper_revision_max_rounds: int = 4
     continuation_tail_chars: int = 12000
     run_until_stage: str = "paper"
 
@@ -221,6 +228,39 @@ def _build_app_config(raw: Dict[str, Any], *, project_root: Path) -> AppConfig:
         paper_prompt=str(workflow_raw.get("paper_prompt", "prompts/paper_writer.md")),
         outline_max_rounds=_as_int(workflow_raw.get("outline_max_rounds"), 4),
         paper_max_rounds=_as_int(workflow_raw.get("paper_max_rounds"), 6),
+        paper_audit_enabled=_as_bool(
+            workflow_raw.get("paper_audit_enabled"),
+            True,
+        ),
+        paper_audit_model=(
+            str(
+                workflow_raw.get(
+                    "paper_audit_model",
+                    "Qwen/Qwen3-VL-235B-A22B-Instruct",
+                )
+            ).strip()
+            or "Qwen/Qwen3-VL-235B-A22B-Instruct"
+        ),
+        paper_audit_temperature=_as_float(
+            workflow_raw.get("paper_audit_temperature"),
+            0.2,
+        ),
+        paper_audit_max_tokens=max(
+            1200,
+            _as_int(workflow_raw.get("paper_audit_max_tokens"), 4200),
+        ),
+        paper_revision_temperature=_as_float(
+            workflow_raw.get("paper_revision_temperature"),
+            0.2,
+        ),
+        paper_revision_max_tokens=max(
+            1800,
+            _as_int(workflow_raw.get("paper_revision_max_tokens"), 7000),
+        ),
+        paper_revision_max_rounds=max(
+            1,
+            _as_int(workflow_raw.get("paper_revision_max_rounds"), 4),
+        ),
         continuation_tail_chars=_as_int(
             workflow_raw.get("continuation_tail_chars"), 12000
         ),

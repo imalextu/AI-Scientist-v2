@@ -40,6 +40,13 @@ workflow:
   paper_prompt: "prompts/paper_writer.md"
   outline_max_rounds: 4
   paper_max_rounds: 6
+  paper_audit_enabled: true
+  paper_audit_model: "Qwen/Qwen3-VL-235B-A22B-Instruct"
+  paper_audit_temperature: 0.2
+  paper_audit_max_tokens: 4200
+  paper_revision_temperature: 0.2
+  paper_revision_max_tokens: 7000
+  paper_revision_max_rounds: 4
   continuation_tail_chars: 12000
 
 runtime:

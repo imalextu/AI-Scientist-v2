@@ -40,6 +40,10 @@ STAGE_FILE_SPECS: Dict[str, tuple[str, str]] = {
     "outline": ("02_outline.json", "json"),
     "paper": ("03_thesis.md", "text"),
 }
+AUX_OUTPUT_FILE_SPECS: Dict[str, tuple[str, str]] = {
+    "paper_initial": ("03a_thesis_initial.md", "text"),
+    "paper_audit": ("03b_thesis_audit.md", "text"),
+}
 CACHE_ROOT = SCRIPT_DIR / ".cache_store"
 CACHE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -104,6 +108,16 @@ def read_cache_outputs(cache_id: str) -> Dict[str, str]:
     outputs: Dict[str, str] = {}
     for stage in STAGE_SEQUENCE:
         file_name, content_type = STAGE_FILE_SPECS[stage]
+        path = cache_dir / file_name
+        if not path.exists():
+            continue
+        raw_text = path.read_text(encoding="utf-8")
+        if content_type == "json":
+            parsed = json.loads(raw_text)
+            outputs[stage] = json.dumps(parsed, ensure_ascii=False, indent=2)
+        else:
+            outputs[stage] = raw_text
+    for stage, (file_name, content_type) in AUX_OUTPUT_FILE_SPECS.items():
         path = cache_dir / file_name
         if not path.exists():
             continue
@@ -284,6 +298,13 @@ def save_cache() -> Response:
             write_json_file(target_file, parsed_outputs[stage_name])
         else:
             target_file.write_text(parsed_outputs[stage_name], encoding="utf-8")
+
+    if stage == "paper":
+        for aux_stage, (file_name, _content_type) in AUX_OUTPUT_FILE_SPECS.items():
+            aux_text = str(outputs.get(aux_stage, "")).strip()
+            if not aux_text:
+                continue
+            (cache_dir / file_name).write_text(aux_text, encoding="utf-8")
 
     title = ""
     idea_obj = parsed_outputs.get("idea")

@@ -22,6 +22,8 @@ const outlineOutput = document.getElementById("outlineOutput");
 const policyWebResearchOutput = document.getElementById("policyWebResearchOutput");
 const policyThreeLayerOutput = document.getElementById("policyThreeLayerOutput");
 const policyCountermeasureOutput = document.getElementById("policyCountermeasureOutput");
+const paperInitialOutput = document.getElementById("paperInitialOutput");
+const paperAuditOutput = document.getElementById("paperAuditOutput");
 const paperOutput = document.getElementById("paperOutput");
 const copyButtons = Array.from(document.querySelectorAll(".copy-btn"));
 const cacheButtons = Array.from(document.querySelectorAll(".cache-btn"));
@@ -35,6 +37,8 @@ const stageOutputMap = {
   policy_web_research: policyWebResearchOutput,
   policy_three_layer_analysis: policyThreeLayerOutput,
   policy_countermeasure_system: policyCountermeasureOutput,
+  paper_initial: paperInitialOutput,
+  paper_audit: paperAuditOutput,
   paper: paperOutput,
 };
 const stageLabelMap = {
@@ -46,7 +50,9 @@ const stageLabelMap = {
   policy_countermeasure_system: "02a-3 对策体系设计 JSON",
   outline: "02 论文大纲 JSON",
   policy_support: "02a 对策支持 JSON（汇总）",
-  paper: "03 论文正文 Markdown",
+  paper_initial: "03a 论文正文初稿 Markdown",
+  paper_audit: "03b 正文审核意见 Markdown",
+  paper: "03 论文正文（审核修改后）Markdown",
 };
 const copyTargetLabelMap = {
   literatureOutput: stageLabelMap.literature,
@@ -57,6 +63,8 @@ const copyTargetLabelMap = {
   policyThreeLayerOutput: stageLabelMap.policy_three_layer_analysis,
   policyCountermeasureOutput: stageLabelMap.policy_countermeasure_system,
   outlineOutput: stageLabelMap.outline,
+  paperInitialOutput: stageLabelMap.paper_initial,
+  paperAuditOutput: stageLabelMap.paper_audit,
   paperOutput: stageLabelMap.paper,
 };
 
@@ -113,7 +121,7 @@ function clearOutputs(options = {}) {
   if (clearLog) {
     logOutput.textContent = "";
   }
-  stageSequence.forEach((stage) => {
+  Object.keys(stageOutputMap).forEach((stage) => {
     replaceStageText(stage, "");
   });
   setPolicySupportRawText("");
@@ -296,6 +304,8 @@ function outputSnapshot() {
     idea: ideaOutput.textContent || "",
     outline: outlineOutput.textContent || "",
     policy_support: policySupportRawText || "",
+    paper_initial: paperInitialOutput.textContent || "",
+    paper_audit: paperAuditOutput.textContent || "",
     paper: paperOutput.textContent || "",
   };
 }
@@ -502,7 +512,7 @@ async function loadSelectedCache() {
     configInput.value = data.config_text || "";
     topicInput.value = data.topic_text || "";
     const outputs = data.outputs || {};
-    stageSequence.forEach((stage) => {
+    Object.keys(stageOutputMap).forEach((stage) => {
       replaceStageText(stage, outputs[stage] || "");
     });
     setPolicySupportRawText(
@@ -614,6 +624,8 @@ async function loadHistoryDir(fileList) {
       format: prettyJsonText,
     },
     { stage: "outline", fileName: "02_outline.json", format: prettyJsonText },
+    { stage: "paper_initial", fileName: "03a_thesis_initial.md", format: (text) => text || "" },
+    { stage: "paper_audit", fileName: "03b_thesis_audit.md", format: (text) => text || "" },
     { stage: "paper", fileName: "03_thesis.md", format: (text) => text || "" },
   ];
 
@@ -641,7 +653,7 @@ async function loadHistoryDir(fileList) {
   }
 
   if (loadedCount === 0) {
-    setStatus("未在目录中找到 00/01/00_review/02a/02/03 文件");
+    setStatus("未在目录中找到 00/01/00_review/02a/02/03a/03b/03 文件");
     return;
   }
 
@@ -651,7 +663,7 @@ async function loadHistoryDir(fileList) {
 
   activeCacheId = "";
   updateResumeStageOptions(null);
-  setStatus(`历史结果已加载（${loadedCount}/6）`);
+  setStatus(`历史结果已加载（${loadedCount}/${targets.length}）`);
 }
 
 function closeSource() {

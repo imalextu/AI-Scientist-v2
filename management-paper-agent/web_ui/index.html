@@ -220,7 +220,43 @@
 
           <div class="card">
             <div class="card-head">
-              <h2>03 论文正文 Markdown</h2>
+              <h2>03a 论文正文初稿 Markdown</h2>
+              <div class="card-actions">
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="paperInitialOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
+            </div>
+            <pre id="paperInitialOutput"></pre>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>03b 正文审核意见 Markdown</h2>
+              <div class="card-actions">
+                <button
+                  type="button"
+                  class="copy-btn ghost"
+                  data-copy-target="paperAuditOutput"
+                  data-label-default="复制"
+                  data-label-copied="已复制"
+                >
+                  复制
+                </button>
+              </div>
+            </div>
+            <pre id="paperAuditOutput"></pre>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>03 论文正文（审核修改后）Markdown</h2>
               <div class="card-actions">
                 <button type="button" class="cache-btn ghost" data-cache-stage="paper">
                   缓存
